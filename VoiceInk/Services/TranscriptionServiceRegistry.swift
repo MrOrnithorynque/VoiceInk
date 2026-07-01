@@ -94,7 +94,7 @@ class TranscriptionServiceRegistry {
         }
     }
 
-    func cleanup() {
-        parakeetTranscriptionService.cleanup()
+    func cleanup() async {
+        await parakeetTranscriptionService.cleanup()
     }
 }

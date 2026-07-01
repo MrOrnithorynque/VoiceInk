@@ -311,9 +311,8 @@ struct RecorderStatusDisplay: View {
                 ProcessingStatusDisplay(mode: .transcribing, color: .white)
                     .transition(.opacity)
             } else if currentState == .recording && !multiSourceLevels.isEmpty {
-                // Conversation mode: one tinted bar per source + live "no audio" hint.
-                MultiSourceLevelBarsView(levels: multiSourceLevels)
-                    .padding(.horizontal, 4)
+                // Conversation mode: compact "N voices" pill; tap to reveal per-source level bars.
+                MultiSourceVoiceCountView(levels: multiSourceLevels)
                     .transition(.opacity)
             } else if currentState == .recording {
                 AudioVisualizer(

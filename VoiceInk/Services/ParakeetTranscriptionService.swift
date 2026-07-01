@@ -1,16 +1,29 @@
+// ParakeetTranscriptionService — batch transcription via FluidAudio's Parakeet CoreML models.
+// An ACTOR: the service is shared (registry singleton) and its methods run off the main actor
+// (pipeline, multi-source assembly, warm-up tasks), so asrManager/cachedModels/loadingTask need
+// serialization. Actors are reentrant across awaits, so cleanup is additionally coordinated with
+// in-flight transcriptions (`inFlightTranscriptions`/`pendingCleanup`): tearing down AsrManager
+// mid-`transcribe` (e.g. user cancels a Conversation-Mode session during assembly) would race
+// FluidAudio's CoreML state.
+
 import Foundation
 import CoreML
 import AVFoundation
 import FluidAudio
 import os.log
 
-class ParakeetTranscriptionService: TranscriptionService {
+actor ParakeetTranscriptionService: TranscriptionService, SegmentingTranscriptionService {
     private var asrManager: AsrManager?
     private var vadManager: VadManager?
     private var activeVersion: AsrModelVersion?
     private var cachedModels: AsrModels?
     private var loadingTask: (version: AsrModelVersion, task: Task<AsrModels, Error>)?
     private let logger = Logger(subsystem: "com.prakashjoshipax.voiceink.parakeet", category: "ParakeetTranscriptionService")
+
+    /// Transcriptions currently awaiting FluidAudio; cleanup is deferred while > 0.
+    private var inFlightTranscriptions = 0
+    /// Set when cleanup() arrives mid-transcription; honoured by the last one to finish.
+    private var pendingCleanup = false
 
     private func version(for model: any TranscriptionModel) -> AsrModelVersion {
         model.name.lowercased().contains("v2") ? .v2 : .v3
@@ -76,6 +89,9 @@ class ParakeetTranscriptionService: TranscriptionService {
     }
 
     func transcribe(audioURL: URL, model: any TranscriptionModel) async throws -> String {
+        beginTranscription()
+        defer { endTranscription() }
+
         let targetVersion = version(for: model)
         try await ensureModelsLoaded(for: targetVersion)
 
@@ -123,28 +139,86 @@ class ParakeetTranscriptionService: TranscriptionService {
         return result.text
     }
 
+    // MARK: - SegmentingTranscriptionService
+
+    /// Transcribe with per-segment timestamps for the multi-source (Conversation Mode) path.
+    /// Unlike `transcribe(...)`, this deliberately skips the ≥20s VAD trimming so token times map
+    /// linearly to the raw WAV (the same VAD-off requirement whisper honours via forceDisableVAD),
+    /// then groups FluidAudio's token timings into readable segments. The role is left empty —
+    /// `TranscriptMerger` stamps each source's role.
+    func transcribeWithSegments(audioURL: URL, model: any TranscriptionModel) async throws -> [TranscriptSegment] {
+        beginTranscription()
+        defer { endTranscription() }
+
+        let targetVersion = version(for: model)
+        try await ensureModelsLoaded(for: targetVersion)
+
+        guard let asrManager = asrManager else {
+            throw ASRError.notInitialized
+        }
+
+        var speechAudio = try readAudioSamples(from: audioURL)
+
+        // Trailing-silence pad (mirrors transcribe()) to capture final punctuation; it appends to
+        // the end so it never shifts earlier timestamps. No VAD trimming — that would warp times.
+        let trailingSilenceSamples = 16_000
+        let maxSingleChunkSamples = 240_000
+        if speechAudio.count + trailingSilenceSamples <= maxSingleChunkSamples {
+            speechAudio += [Float](repeating: 0, count: trailingSilenceSamples)
+        }
+
+        let result = try await asrManager.transcribe(speechAudio)
+
+        guard let timings = result.tokenTimings, !timings.isEmpty else {
+            // No token timings (e.g. empty/near-silent source): fall back to one whole-file segment
+            // so a non-empty transcript still participates in the merge.
+            let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            return text.isEmpty ? [] : [TranscriptSegment(speaker: "", text: text, start: 0, end: result.duration)]
+        }
+
+        // Token `endTime`s are synthesized (next token's start) — ParakeetSegmentGrouper clamps
+        // them; see its header before changing this seam.
+        let tokens = timings.map { TimedToken(token: $0.token, start: $0.startTime, end: $0.endTime) }
+        return ParakeetSegmentGrouper.group(tokens)
+    }
+
+    /// Decode the WAV via the RIFF-walking shared reader (Apple's writer inserts a FLLR chunk;
+    /// a fixed 44-byte offset would bias every token timestamp ~0.13s late).
     private func readAudioSamples(from url: URL) throws -> [Float] {
         do {
-            let data = try Data(contentsOf: url)
-            guard data.count > 44 else {
-                throw ASRError.invalidAudioData
-            }
-
-            let floats = stride(from: 44, to: data.count, by: 2).map {
-                return data[$0..<$0 + 2].withUnsafeBytes {
-                    let short = Int16(littleEndian: $0.load(as: Int16.self))
-                    return max(-1.0, min(Float(short) / 32767.0, 1.0))
-                }
-            }
-
-            return floats
+            return try WAVSampleReader.samples(from: url)
         } catch {
             throw ASRError.invalidAudioData
         }
     }
 
-    // Releases ASR/VAD resources but preserves cached models for reuse
+    // MARK: - Cleanup (coordinated with in-flight transcriptions)
+
+    private func beginTranscription() {
+        inFlightTranscriptions += 1
+    }
+
+    private func endTranscription() {
+        inFlightTranscriptions -= 1
+        if pendingCleanup && inFlightTranscriptions == 0 {
+            pendingCleanup = false
+            performCleanup()
+        }
+    }
+
+    /// Release ASR/VAD resources (cached models are preserved for reuse). If a transcription is
+    /// in flight, the teardown is deferred until it finishes rather than yanking AsrManager's
+    /// CoreML state out from under it.
     func cleanup() {
+        guard inFlightTranscriptions == 0 else {
+            pendingCleanup = true
+            logger.notice("cleanup deferred: \(self.inFlightTranscriptions, privacy: .public) transcription(s) in flight")
+            return
+        }
+        performCleanup()
+    }
+
+    private func performCleanup() {
         asrManager?.cleanup()
         asrManager = nil
         vadManager = nil

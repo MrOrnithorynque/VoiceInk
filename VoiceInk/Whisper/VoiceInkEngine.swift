@@ -286,8 +286,11 @@ class VoiceInkEngine: NSObject, ObservableObject {
     /// Atomic: on any failure to start, nothing is left running.
     private func tryStartMultiSource(powerModeId: UUID?) async -> Bool {
         guard UserDefaults.standard.bool(forKey: "TwoSourceTranscriptionEnabled") else { return false }
-        // Only local models can produce timestamped segments; otherwise use single-source.
-        guard transcriptionModelManager.currentTranscriptionModel?.provider == .local else { return false }
+        // Conversation Mode is model-agnostic: it works with any model whose service can emit
+        // per-segment timestamps (whisper OR Parakeet today). We run the selected model once per
+        // source WAV and interleave by timestamp — no diarization needed (each file is one role).
+        guard let currentModel = transcriptionModelManager.currentTranscriptionModel,
+              serviceRegistry.segmentingService(for: currentModel) != nil else { return false }
 
         let sources: [CaptureSource]
         do {
@@ -323,14 +326,18 @@ class VoiceInkEngine: NSObject, ObservableObject {
 
         await ActiveWindowService.shared.applyConfiguration(powerModeId: powerModeId)
 
-        // Warm the local model in the background (mirrors the single-source path).
+        // Warm the effective model in the background (mirrors the single-source path) so a cold
+        // whisper/Parakeet load isn't paid inside the post-stop assembly.
         Task.detached { [weak self] in
             guard let self else { return }
-            if let model = await self.transcriptionModelManager.currentTranscriptionModel,
-               model.provider == .local,
-               let localWhisperModel = await self.whisperModelManager.availableModels.first(where: { $0.name == model.name }),
-               await self.whisperModelManager.whisperContext == nil {
-                try? await self.whisperModelManager.loadModel(localWhisperModel)
+            guard let model = await self.transcriptionModelManager.currentTranscriptionModel else { return }
+            if model.provider == .local {
+                if let localWhisperModel = await self.whisperModelManager.availableModels.first(where: { $0.name == model.name }),
+                   await self.whisperModelManager.whisperContext == nil {
+                    try? await self.whisperModelManager.loadModel(localWhisperModel)
+                }
+            } else if let parakeetModel = model as? ParakeetModel {
+                try? await self.serviceRegistry.parakeetTranscriptionService.loadModel(for: parakeetModel)
             }
         }
 
@@ -493,7 +500,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
     func cleanupResources() async {
         logger.notice("cleanupResources: releasing model resources")
         await whisperModelManager.cleanupResources()
-        serviceRegistry.cleanup()
+        await serviceRegistry.cleanup()
         logger.notice("cleanupResources: completed")
     }
 

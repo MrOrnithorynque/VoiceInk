@@ -103,14 +103,9 @@ class LocalTranscriptionService: TranscriptionService, SegmentingTranscriptionSe
         if whisperContext === context { whisperContext = nil }
     }
 
+    /// Decode the WAV via the RIFF-walking shared reader (Apple's writer inserts a FLLR chunk;
+    /// a fixed 44-byte offset would bias every segment timestamp ~0.13s late).
     private func readAudioSamples(_ url: URL) throws -> [Float] {
-        let data = try Data(contentsOf: url)
-        let floats = stride(from: 44, to: data.count, by: 2).map {
-            return data[$0..<$0 + 2].withUnsafeBytes {
-                let short = Int16(littleEndian: $0.load(as: Int16.self))
-                return max(-1.0, min(Float(short) / 32767.0, 1.0))
-            }
-        }
-        return floats
+        try WAVSampleReader.samples(from: url)
     }
 }

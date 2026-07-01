@@ -61,7 +61,9 @@ class AudioTranscriptionManager: ObservableObject {
 
                 let serviceRegistry = TranscriptionServiceRegistry(modelProvider: engine.whisperModelManager, modelsDirectory: engine.whisperModelManager.modelsDirectory, modelContext: modelContext)
                 defer {
-                    serviceRegistry.cleanup()
+                    // cleanup() is async (actor-coordinated with in-flight transcriptions);
+                    // fire-and-forget is fine for this throwaway local registry.
+                    Task { await serviceRegistry.cleanup() }
                 }
 
                 processingPhase = .processingAudio
