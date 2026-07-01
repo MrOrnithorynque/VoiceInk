@@ -44,12 +44,19 @@ Steps:
 
 The audio bytes come from `CoreAudioRecorder`'s `onAudioChunk` → `VoiceInkEngine` wires the session's callback (see the **transcription-flow** skill). The PCM format is already 16 kHz / mono / Int16 — do not resample again.
 
-## Timestamps / diarization (not supported today)
+## Timestamps / diarization
 
-The protocol returns a **plain `String`** — no segment/word timestamps or speaker labels flow through the app. To surface them you must widen `TranscriptionService`/session return types and the `Transcription` SwiftData model. Note:
+The base protocol returns a **plain `String`**, but segment timestamps ARE plumbed through a
+separate additive protocol: `SegmentingTranscriptionService.transcribeWithSegments(audioURL:model:)
+-> [TranscriptSegment]` (run VAD-off so times map to the raw WAV). Conformers today: whisper
+`LocalTranscriptionService` (via `LibWhisper.getTimestampedSegments()`) and
+`ParakeetTranscriptionService` (FluidAudio token timings → `ParakeetSegmentGrouper`). The
+multi-source path consumes it via `TranscriptionServiceRegistry.segmentingService(for:)` — to make
+a NEW provider Conversation-Mode-eligible, conform its service (see the **conversation-mode**
+skill). Speaker **diarization** is still not supported (multi-source gets speakers ground-truth
+per capture source instead). Note:
 
-- **whisper.cpp** exposes segment/token timestamps (`whisper_full_get_segment_t0/t1`) via `LibWhisper.swift` — not currently plumbed out.
-- **FluidAudio** (already a dependency, used for Parakeet) provides ASR timestamps **and speaker diarization**.
+- **FluidAudio** (already a dependency, used for Parakeet) also provides **speaker diarization**.
 - Cloud/streaming providers with native diarization: Deepgram, Soniox (both already integrated as providers).
 
 ## Checklist

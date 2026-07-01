@@ -1,6 +1,6 @@
 ---
 name: audio-capture
-description: Work on VoiceInk's microphone/audio recording — CoreAudioRecorder (AUHAL), Recorder, AudioDeviceManager, device selection/switching, sample-rate/format conversion, audio metering, the onAudioChunk streaming seam, or adding new capture sources (second mic, system/app audio). Use for any change to how raw audio is captured, converted, or written to WAV.
+description: Work on VoiceInk's microphone/audio recording — CoreAudioRecorder (AUHAL), Recorder, AudioDeviceManager, device selection/switching, sample-rate/format conversion, audio metering, the onAudioChunk streaming seam, or adding a new mic-style capture source. Use for any change to how raw audio is captured, converted, or written to WAV. (System/per-app audio taps live in the core-audio-capture skill; the multi-source subsystem in conversation-mode.)
 ---
 
 # Audio capture
@@ -31,7 +31,7 @@ The input callback (`handleInputBuffer` / `convertAndWriteToFile`) runs on the *
 
 Key facts before you start:
 
-- Everything here assumes **one device → one mono WAV**. Multi-source means N capture instances (or an aggregate device) writing N files/channels and producing N `onAudioChunk` streams that must stay **time-aligned** (use `AudioTimeStamp.mSampleTime` / host time; different devices have independent clocks and drift).
+- Everything here assumes **one device → one mono WAV**. Multi-source means N capture instances (or an aggregate device) writing N files/channels and producing N `onAudioChunk` streams that must stay **time-aligned** — align on **host time only** (`mHostTime` / `mach_absolute_time()`); different devices have independent clocks, so **never compare `mSampleTime` across devices**. This is already built: see the **conversation-mode** and **core-audio-capture** skills.
 - **System / per-app audio is NOT captured here.** `ScreenCaptureService` uses ScreenCaptureKit only for OCR. To capture app/system output on macOS 14.4+ use **Core Audio process taps** (`AudioHardwareCreateProcessTap` + `CATapDescription`, optionally aggregated) or **ScreenCaptureKit audio** (`SCStream` with `capturesAudio`). The app is **not sandboxed** and already has the `screen-capture` entitlement, which helps.
 - **Mute conflict:** `Recorder.startRecording` calls `MediaController.muteSystemAudio()` and pauses playback on start (see `Recorder.swift`). If you capture system audio you must *not* mute it — gate that behavior on whether a system-audio source is active.
 - Device UIDs vs IDs: `AudioDeviceID`s are not stable across reconnects; persist device **UIDs** (`kAudioDevicePropertyDeviceUID`) for saved multi-source configs and resolve to IDs at record time (as `AudioDeviceManager` does).
@@ -41,4 +41,4 @@ Key facts before you start:
 - `CoreAudioRecorder.swift` — AUHAL setup, real-time callback, format conversion, `switchDevice`, device-info helpers.
 - `Recorder.swift` — MainActor wrapper, meter timer, `.audioDeviceSwitchRequired` observer, system-mute on start/stop.
 - `Services/AudioDeviceManager.swift` / `AudioDeviceConfiguration.swift` — enumerate/select devices, `getCurrentDevice()`, `availableDevices`.
-- `Views/Settings/AudioInputSettingsView.swift` — device-picker UI (where a multi-source config UI would extend).
+- `Views/Settings/AudioInputSettingsView.swift` — single-mic device-picker UI (the multi-source config UI is separate: `Views/Settings/AudioSourcesSettingsView.swift`, see **conversation-mode**).

@@ -33,20 +33,40 @@ VoiceInk is an Xcode project (`VoiceInk.xcodeproj`, scheme `VoiceInk`, target ma
 
 Limitations of a local build: no iCloud dictionary sync, no Sparkle auto-updates.
 
-## Raw xcodebuild (when you must)
+## Fast incremental build (the dev loop — reuses `.local-build`, unlike `make local` which wipes it)
 
 ```bash
 xcodebuild -project VoiceInk.xcodeproj -scheme VoiceInk -configuration Debug \
   -derivedDataPath .local-build -xcconfig LocalBuild.xcconfig \
-  CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO \
-  CODE_SIGN_ENTITLEMENTS=VoiceInk/VoiceInk.local.entitlements build
+  CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=YES \
+  DEVELOPMENT_TEAM="" CODE_SIGN_ENTITLEMENTS="$(pwd)/VoiceInk/VoiceInk.local.entitlements" \
+  SWIFT_ACTIVE_COMPILATION_CONDITIONS='$(inherited) LOCAL_BUILD' build \
+  2>&1 | grep -E "error:|BUILD SUCCEEDED|BUILD FAILED"
 ```
 
-Tests: `xcodebuild -project VoiceInk.xcodeproj -scheme VoiceInk test` (suites in `VoiceInkTests/`, `VoiceInkUITests/` — currently minimal).
+⚠️ **`CODE_SIGN_ENTITLEMENTS` MUST be an absolute path** (`$(pwd)/…`). A relative path is applied
+to every SPM package target too and resolves against *their* dirs → `Build input file cannot be
+found: …/AXSwift/VoiceInk/VoiceInk.local.entitlements` and BUILD FAILED.
+
+## Running unit tests
+
+```bash
+xcodebuild test -project VoiceInk.xcodeproj -scheme VoiceInk -configuration Debug \
+  -derivedDataPath .local-build -xcconfig LocalBuild.xcconfig -destination 'platform=macOS' \
+  -only-testing:VoiceInkTests/TranscriptMergerTests \
+  CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO CODE_SIGN_ENTITLEMENTS="$(pwd)/VoiceInk/VoiceInk.local.entitlements" \
+  MACOSX_DEPLOYMENT_TARGET=14.4 SWIFT_ACTIVE_COMPILATION_CONDITIONS='$(inherited) LOCAL_BUILD'
+```
+
+⚠️ **`MACOSX_DEPLOYMENT_TARGET=14.4` is required for tests.** The `VoiceInkTests` target's
+deployment target is macOS 14.0 but the app module is 14.4, so `@testable import VoiceInk`
+fails with *"module 'VoiceInk' has a minimum deployment target of macOS 14.4"* unless you bump
+it on the command line. Tests use **Swift Testing** (`import Testing`, `@Test`, `#expect`), not
+XCTest. Pure-logic suites: `TranscriptMergerTests`, `TranscriptExportTests`.
 
 ## Gotchas
 
-- **New source files** must be added to the `VoiceInk` target in `VoiceInk.xcodeproj`, not just dropped in the folder, or they are silently not compiled. When adding files programmatically, update `project.pbxproj` accordingly.
+- **New source files auto-include — do NOT edit `project.pbxproj`.** The project is `objectVersion = 77` and uses Xcode's **file-system-synchronized groups** (`PBXFileSystemSynchronizedRootGroup`); individual `.swift` files are not listed in `project.pbxproj` (e.g. `CoreAudioRecorder.swift` appears 0 times). Any `.swift` file placed under `VoiceInk/` is automatically part of the target. Just create the file. (Hand-editing `project.pbxproj` to add file refs is unnecessary and risks corrupting it.)
 - **Two entitlements files**: `VoiceInk/VoiceInk.entitlements` (normal builds) and `VoiceInk/VoiceInk.local.entitlements` (`make local`). Any new capability (e.g. a new audio/TCC entitlement) must be added to **both**.
 - SPM dependencies (FluidAudio, Sparkle, KeyboardShortcuts, LLMkit, etc.) resolve into `.local-build/SourcePackages/` for local builds — don't edit those checkouts.
 - Prefer `make local` then `open ~/Downloads/VoiceInk.app`; to confirm a UI/behavior change actually works, use the **/run** or **/verify** skills.

@@ -38,7 +38,7 @@ description: Understand or modify VoiceInk's end-to-end recording lifecycle — 
 
 - **Add fields to the saved transcript** → edit `Models/Transcription.swift` (SwiftData `@Model`; the transcript store is local — `cloudKitDatabase: .none` in `VoiceInk.swift` — so keep changes additive/optional for safe migration regardless), set them in `TranscriptionPipeline.run` or `VoiceInkEngine`, render in `Views/History/*`.
 - **Change post-processing** (new filter/formatter/replacement step) → `TranscriptionPipeline.run`.
-- **Multi-source / speaker-labeled output** → the current design assumes **one WAV → one String → one Transcription row**. Supporting N sources with who-spoke-when means: N time-aligned captures (see **audio-capture**), a transcription return type carrying segments+timestamps (see **add-transcription-provider**), a merge/interleave step, and a `Transcription` schema that stores per-source segments. Also reconcile the AI-enhance/paste steps, which assume a single text blob.
+- **Multi-source / speaker-labeled output** → **already built** (Conversation Mode): N time-aligned captures (`Services/MultiSource/*`), segments via `SegmentingTranscriptionService`, `TranscriptMerger` interleave, `Transcription.segmentsJSON`/`audioSourcesJSON`, and a dedicated `TranscriptionPipeline.runMultiSource` that skips AI-enhance. See the **conversation-mode** skill before touching any of it.
 - **Cancellation** is cooperative via the `shouldCancel` closure — long new steps should check it.
 
 ## Key files

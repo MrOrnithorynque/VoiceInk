@@ -43,7 +43,7 @@ TranscriptionPipeline.run()                         ← Whisper/TranscriptionPip
 ### Layers & key files
 
 - **Audio capture** — `CoreAudioRecorder.swift` (AUHAL, single input device, real-time callback, format conversion to 16kHz mono Int16), `Recorder.swift` (MainActor wrapper, meters, device-switch handling), `Services/AudioDeviceManager.swift` (device enumeration/selection), `Views/Settings/AudioInputSettingsView.swift` (device picker UI). → **audio-capture** skill.
-- **Multi-source capture** (Conversation Mode, opt-in) — `Services/MultiSource/*`: `CaptureSource` protocol, `MicCaptureSource` + `SystemAudioTapRecorder` (Core Audio process tap, macOS 14.4+), `MultiSourceCaptureCoordinator` (N sources, one host-time anchor), `TranscriptMerger` (pure interleave, unit-tested), `MultiSourceAssembler`. Records mic + system audio → merged timestamped speaker-labeled transcript. Gated on `TwoSourceTranscriptionEnabled` + local model.
+- **Multi-source capture** (Conversation Mode, opt-in) — `Services/MultiSource/*`: `CaptureSource` protocol, `MicCaptureSource` + `SystemAudioTapRecorder` (Core Audio process tap, macOS 14.4+), `MultiSourceCaptureCoordinator` (N sources, one host-time anchor), `TranscriptMerger` (pure interleave, unit-tested), `MultiSourceAssembler`. Records mic + system audio → merged timestamped speaker-labeled transcript. Gated on `TwoSourceTranscriptionEnabled` + a **segment-capable model** (whisper `.local` OR Parakeet — anything whose service conforms to `SegmentingTranscriptionService`; runs the selected model once per source WAV and interleaves by timestamp, no diarization).
 - **Transcription** — protocol `Services/TranscriptionService.swift` (`transcribe(audioURL:model:) async throws -> String`), `Services/TranscriptionServiceRegistry.swift` (routes a model to a service), model types in `Models/TranscriptionModel.swift` + declarations in `Models/PredefinedModels.swift`. Batch services: `LocalTranscriptionService` (whisper.cpp), `ParakeetTranscriptionService` (FluidAudio), `NativeAppleTranscriptionService`, `CloudTranscription/*`. Live: `Services/StreamingTranscription/*`. → **add-transcription-provider** skill.
 - **Engine / orchestration** — `Whisper/VoiceInkEngine.swift` (owns `Recorder`, generates the WAV URL, drives the pipeline), `Whisper/TranscriptionPipeline.swift`, `Whisper/RecordingState.swift`, `Whisper/RecorderUIManager.swift`, `Services/TranscriptionSession.swift`. → **transcription-flow** skill.
 - **whisper.cpp bridge** — `Whisper/LibWhisper.swift`, `Whisper/WhisperModelManager.swift`, `Whisper/VoiceInkEngine+Protocols.swift`.
@@ -58,19 +58,21 @@ TranscriptionPipeline.run()                         ← Whisper/TranscriptionPip
 - **Settings**: plain `UserDefaults` string/bool keys (e.g. `lastUsedMicrophoneDeviceID`, `isSystemMuteEnabled`, `IsTextFormattingEnabled`, `TranscriptionPrompt`). No central settings model.
 - **Recordings**: `~/Library/Application Support/com.prakashjoshipax.VoiceInk/Recordings/<UUID>.wav`, always 16kHz mono Int16 WAV.
 - **Entitlements**: `VoiceInk/VoiceInk.entitlements` (release) and `VoiceInk/VoiceInk.local.entitlements` (used by `make local`; keep both in sync when adding capabilities). App is **not** sandboxed; already holds `device.audio-input` and `screen-capture`.
-- **New Swift files** must be added to the Xcode project target (`VoiceInk.xcodeproj`), not just the folder, or they won't compile.
+- **New Swift files auto-include** — do NOT edit `project.pbxproj`. The project (`objectVersion = 77`) uses Xcode's file-system-synchronized groups (`PBXFileSystemSynchronizedRootGroup`), so any `.swift` placed under `VoiceInk/` is automatically part of the target. Just create the file. See the **building-voiceink** skill.
 
 ## Gotchas
 
-- The base `TranscriptionService.transcribe(...)` returns a **plain `String`** (no timestamps). Segment timestamps come from the separate `SegmentingTranscriptionService` (local only), used by the multi-source path; `Transcription` now also carries optional `segmentsJSON`/`audioSourcesJSON`.
+- The base `TranscriptionService.transcribe(...)` returns a **plain `String`** (no timestamps). Segment timestamps come from the separate `SegmentingTranscriptionService` (conformed by whisper `LocalTranscriptionService` **and** `ParakeetTranscriptionService`), used by the multi-source path; `Transcription` now also carries optional `segmentsJSON`/`audioSourcesJSON`.
 - On record start, the single-source `Recorder` **mutes system audio** (`MediaController.muteSystemAudio()`) and pauses media playback; it un-mutes on stop. The multi-source path deliberately does NOT use `Recorder` (it drives `CoreAudioRecorder`/the tap directly), so it never mutes or pauses the app it's capturing — reconcile with this if you add another capture entry point.
 - Streaming is opt-in per model (`TranscriptionServiceRegistry.supportsStreaming`); most models are batch (transcribe a finished WAV file).
 - `FluidAudio` (SPM dependency, used for Parakeet) also provides **speaker diarization** — relevant before reaching for a cloud diarizer.
 
 ## Skills (`.claude/skills/`)
 
-- **building-voiceink** — build, sign, run, and package the app; the whisper.xcframework dependency.
-- **audio-capture** — how Core Audio recording works and the real-time-callback rules; where to touch device/format/multi-source capture.
+- **building-voiceink** — build, sign, run, test the app; the whisper.xcframework dependency; the entitlements-absolute-path + test-deployment-target + synchronized-groups gotchas.
+- **audio-capture** — how single-device Core Audio (AUHAL) mic recording works and the real-time-callback rules.
+- **core-audio-capture** — system/per-app **process taps** (CATapDescription → aggregate → IOProc), process enumeration, RT-safety, the signed-build-or-silence gotcha. The hard-won API reference.
+- **conversation-mode** — the multi-source subsystem: architecture, the load-bearing invariants, the 4 correctness traps, persistence + the deferred @Relationship migration.
 - **add-transcription-provider** — end-to-end steps to add a new transcription model or provider (batch or streaming).
 - **transcription-flow** — the record → transcribe → enhance → paste lifecycle and how to modify it.
 - **security-checklist** — VoiceInk-specific security & privacy pass (egress, secrets, AX paste, data-at-rest, prompt injection, entitlements) before shipping.
