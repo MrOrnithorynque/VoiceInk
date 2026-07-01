@@ -12,9 +12,16 @@ struct MenuBarView: View {
     @EnvironmentObject var enhancementService: AIEnhancementService
     @EnvironmentObject var aiService: AIService
     @ObservedObject var audioDeviceManager = AudioDeviceManager.shared
+    @AppStorage("TwoSourceTranscriptionEnabled") private var conversationModeEnabled = false
     @State private var launchAtLoginEnabled = LaunchAtLogin.isEnabled
     @State private var menuRefreshTrigger = false
     @State private var isHovered = false
+
+    /// Name of the mic the next recording will use, for the Audio Input menu label.
+    private var currentInputDeviceName: String? {
+        let current = audioDeviceManager.getCurrentDevice()
+        return audioDeviceManager.availableDevices.first(where: { $0.id == current })?.name
+    }
     
     var body: some View {
         VStack {
@@ -153,13 +160,23 @@ struct MenuBarView: View {
                     Text("No devices available")
                         .foregroundColor(.secondary)
                 }
+
+                Divider()
+
+                Button("Audio Input Settings") {
+                    menuBarManager.openMainWindowAndNavigate(to: "Audio Input")
+                }
             } label: {
                 HStack {
-                    Text("Audio Input")
+                    // Mirror the "Transcription Model: X" pattern so the active mic is visible
+                    // without opening the submenu (in Prioritized mode this is the resolved pick).
+                    Text("Audio Input: \(currentInputDeviceName ?? "None")")
                     Image(systemName: "chevron.up.chevron.down")
                         .font(.system(size: 10))
                 }
             }
+
+            Toggle("Conversation Mode (Mic + System)", isOn: $conversationModeEnabled)
 
             Menu("Additional") {
                 Button {
