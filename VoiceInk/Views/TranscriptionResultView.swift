@@ -56,9 +56,13 @@ struct TranscriptionResultView: View {
             }
             
             ScrollView {
-                Text(textForSelectedTab)
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                if transcription.hasSegments, let segments = transcription.decodedSegments {
+                    ConversationTranscriptView(segments: segments)
+                } else {
+                    Text(textForSelectedTab)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
             }
             
             HStack {

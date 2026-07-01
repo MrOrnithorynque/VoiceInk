@@ -181,4 +181,94 @@ class TranscriptionPipeline {
 
         await onDismiss()
     }
+
+    /// Multi-source variant: transcribe each captured source with segment timestamps, merge
+    /// into an ordered speaker-labeled transcript, persist segments + sources, and paste the
+    /// flat labeled text. Deliberately bypasses the bracket-stripping output filter (cleaning
+    /// happens per-segment inside the assembler) and skips AI enhancement (off by default for
+    /// multi-speaker transcripts, so the `[mm:ss] Speaker:` layout is never LLM-reflowed).
+    func runMultiSource(
+        transcription: Transcription,
+        records: [AudioSourceRecord],
+        model: any TranscriptionModel,
+        assembler: MultiSourceAssembler,
+        shouldCancel: () -> Bool,
+        onCleanup: @escaping () async -> Void,
+        onDismiss: @escaping () async -> Void
+    ) async {
+        // Before the sources are persisted (audioSourcesJSON, set on success), the secondary
+        // WAVs are unreferenced. On cancel, delete them — but keep the primary (mic) WAV, which
+        // the row's audioFileURL still points at (matching single-source cancel behavior).
+        let primaryURLString = transcription.audioFileURL
+        func discardSecondaryWAVs() {
+            for record in records where record.fileURL.absoluteString != primaryURLString {
+                try? FileManager.default.removeItem(at: record.fileURL)
+            }
+        }
+
+        if shouldCancel() { discardSecondaryWAVs(); await onCleanup(); return }
+
+        Task {
+            let isSystemMuteEnabled = UserDefaults.standard.bool(forKey: "isSystemMuteEnabled")
+            if isSystemMuteEnabled { try? await Task.sleep(nanoseconds: 200_000_000) }
+            SoundManager.shared.playStopSound()
+        }
+
+        var finalPastedText: String?
+        logger.notice("🔄 Starting multi-source transcription (\(records.count, privacy: .public) sources)…")
+
+        do {
+            let start = Date()
+            let (segments, flatText) = try await assembler.assemble(sources: records, model: model)
+
+            if shouldCancel() { discardSecondaryWAVs(); await onCleanup(); return }
+
+            var actualDuration: TimeInterval = 0
+            if let primaryURL = records.first?.fileURL {
+                let asset = AVURLAsset(url: primaryURL)
+                actualDuration = (try? CMTimeGetSeconds(await asset.load(.duration))) ?? 0
+            }
+
+            let powerModeManager = PowerModeManager.shared
+            let activePowerModeConfig = powerModeManager.currentActiveConfiguration
+
+            transcription.text = flatText
+            transcription.segmentsJSON = MultiSourceTranscript.encodeSegments(segments)
+            transcription.audioSourcesJSON = MultiSourceTranscript.encodeSources(records)
+            transcription.duration = actualDuration
+            transcription.transcriptionModelName = model.displayName
+            transcription.transcriptionDuration = Date().timeIntervalSince(start)
+            transcription.powerModeName = (activePowerModeConfig?.isEnabled == true) ? activePowerModeConfig?.name : nil
+            transcription.powerModeEmoji = (activePowerModeConfig?.isEnabled == true) ? activePowerModeConfig?.emoji : nil
+            transcription.transcriptionStatus = TranscriptionStatus.completed.rawValue
+            finalPastedText = flatText
+            logger.notice("📝 Multi-source transcript (\(segments.count, privacy: .public) segments)")
+        } catch {
+            let errorDescription = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            transcription.text = "Transcription Failed: \(errorDescription)"
+            transcription.transcriptionStatus = TranscriptionStatus.failed.rawValue
+        }
+
+        try? modelContext.save()
+        NotificationCenter.default.post(name: .transcriptionCompleted, object: transcription)
+
+        if shouldCancel() { await onCleanup(); return }
+
+        if var textToPaste = finalPastedText,
+           transcription.transcriptionStatus == TranscriptionStatus.completed.rawValue {
+            if case .trialExpired = licenseViewModel.licenseState {
+                textToPaste = """
+                    Your trial has expired. Upgrade to VoiceInk Pro at tryvoiceink.com/buy
+                    \n\(textToPaste)
+                    """
+            }
+            let pasteText = textToPaste
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                let appendSpace = UserDefaults.standard.bool(forKey: "AppendTrailingSpace")
+                CursorPaster.pasteAtCursor(pasteText + (appendSpace ? " " : ""))
+            }
+        }
+
+        await onDismiss()
+    }
 }

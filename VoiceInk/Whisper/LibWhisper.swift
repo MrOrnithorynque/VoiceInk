@@ -28,9 +28,14 @@ actor WhisperContext {
         }
     }
 
-    func fullTranscribe(samples: [Float]) -> Bool {
+    /// - Parameter forceDisableVAD: when true, whisper's internal VAD is disabled even if
+    ///   the user's `IsVADEnabled` default is set. The multi-source path requires this so
+    ///   `whisper_full_get_segment_t0/t1` are relative to the raw WAV timeline (VAD trims
+    ///   silence *before* transcription, warping intra-stream timestamps non-linearly —
+    ///   which would mis-interleave two sources with different silence distributions).
+    func fullTranscribe(samples: [Float], forceDisableVAD: Bool = false) -> Bool {
         guard let context = context else { return false }
-        
+
         let maxThreads = max(1, min(8, cpuCount() - 2))
         var params = whisper_full_default_params(WHISPER_SAMPLING_GREEDY)
         
@@ -69,8 +74,9 @@ actor WhisperContext {
 
         whisper_reset_timings(context)
         
-        // Configure VAD if enabled by user and model is available
-        let isVADEnabled = UserDefaults.standard.bool(forKey: "IsVADEnabled")
+        // Configure VAD if enabled by user and model is available (never on the
+        // multi-source path — see forceDisableVAD).
+        let isVADEnabled = UserDefaults.standard.bool(forKey: "IsVADEnabled") && !forceDisableVAD
         if isVADEnabled, let vadModelPath = self.vadModelPath {
             params.vad = true
             params.vad_model_path = (vadModelPath as NSString).utf8String
@@ -108,6 +114,24 @@ actor WhisperContext {
             transcription += String(cString: whisper_full_get_segment_text(context, i))
         }
         return transcription
+    }
+
+    /// One entry per whisper segment with its start/end **in seconds** on the transcribed
+    /// audio's own timeline. whisper.cpp reports `t0`/`t1` in centiseconds (10 ms units),
+    /// so they are multiplied by 0.01. Only meaningful on a VAD-disabled run (otherwise the
+    /// times are relative to VAD-trimmed audio). Used by the multi-source merge.
+    func getTimestampedSegments() -> [(start: TimeInterval, end: TimeInterval, text: String)] {
+        guard let context = context else { return [] }
+        var result: [(start: TimeInterval, end: TimeInterval, text: String)] = []
+        let n = whisper_full_n_segments(context)
+        result.reserveCapacity(Int(n))
+        for i in 0..<n {
+            let t0 = Double(whisper_full_get_segment_t0(context, i)) * 0.01  // centisec → sec
+            let t1 = Double(whisper_full_get_segment_t1(context, i)) * 0.01
+            let text = String(cString: whisper_full_get_segment_text(context, i))
+            result.append((start: t0, end: t1, text: text))
+        }
+        return result
     }
 
     static func createContext(path: String) async throws -> WhisperContext {

@@ -26,6 +26,12 @@ final class Transcription {
     var powerModeEmoji: String?
     var transcriptionStatus: String?
 
+    // Multi-source (two-source conversation) support. Additive optional scalars → safe under
+    // SwiftData lightweight migration. nil for single-source and legacy/imported rows, which
+    // then fall back to the classic Original/Enhanced rendering.
+    var segmentsJSON: String?      // JSON [TranscriptSegment] — the merged labeled transcript
+    var audioSourcesJSON: String?  // JSON [AudioSourceRecord] — per-source WAV + t0Offset + role
+
     init(text: String,
          duration: TimeInterval,
          enhancedText: String? = nil,
@@ -56,5 +62,36 @@ final class Transcription {
         self.powerModeName = powerModeName
         self.powerModeEmoji = powerModeEmoji
         self.transcriptionStatus = transcriptionStatus.rawValue
+    }
+}
+
+// MARK: - Multi-source helpers
+
+extension Transcription {
+    /// True when this row has a merged, speaker-labeled segment list to render.
+    var hasSegments: Bool { segmentsJSON != nil }
+
+    /// True when this row was recorded from multiple audio sources.
+    var isMultiSource: Bool { (decodedSources?.count ?? 0) > 1 }
+
+    var decodedSegments: [TranscriptSegment]? { MultiSourceTranscript.decodeSegments(segmentsJSON) }
+    var decodedSources: [AudioSourceRecord]? { MultiSourceTranscript.decodeSources(audioSourcesJSON) }
+
+    /// Distinct speaker count for the History "N speakers" badge (nil if not multi-source).
+    var speakerCount: Int? {
+        guard let sources = decodedSources, sources.count > 1 else { return nil }
+        return Set(sources.map { $0.role }).count
+    }
+
+    /// Every audio file backing this row: the per-source WAVs when multi-source, otherwise
+    /// the single `audioFileURL`. Used by cleanup/deletion so per-source files aren't orphaned.
+    var allAudioFileURLs: [URL] {
+        if let sources = decodedSources, !sources.isEmpty {
+            return sources.map { $0.fileURL }
+        }
+        if let audioFileURL, let url = URL(string: audioFileURL) {
+            return [url]
+        }
+        return []
     }
 }

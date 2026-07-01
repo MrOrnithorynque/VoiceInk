@@ -43,6 +43,7 @@ TranscriptionPipeline.run()                         ← Whisper/TranscriptionPip
 ### Layers & key files
 
 - **Audio capture** — `CoreAudioRecorder.swift` (AUHAL, single input device, real-time callback, format conversion to 16kHz mono Int16), `Recorder.swift` (MainActor wrapper, meters, device-switch handling), `Services/AudioDeviceManager.swift` (device enumeration/selection), `Views/Settings/AudioInputSettingsView.swift` (device picker UI). → **audio-capture** skill.
+- **Multi-source capture** (Conversation Mode, opt-in) — `Services/MultiSource/*`: `CaptureSource` protocol, `MicCaptureSource` + `SystemAudioTapRecorder` (Core Audio process tap, macOS 14.4+), `MultiSourceCaptureCoordinator` (N sources, one host-time anchor), `TranscriptMerger` (pure interleave, unit-tested), `MultiSourceAssembler`. Records mic + system audio → merged timestamped speaker-labeled transcript. Gated on `TwoSourceTranscriptionEnabled` + local model.
 - **Transcription** — protocol `Services/TranscriptionService.swift` (`transcribe(audioURL:model:) async throws -> String`), `Services/TranscriptionServiceRegistry.swift` (routes a model to a service), model types in `Models/TranscriptionModel.swift` + declarations in `Models/PredefinedModels.swift`. Batch services: `LocalTranscriptionService` (whisper.cpp), `ParakeetTranscriptionService` (FluidAudio), `NativeAppleTranscriptionService`, `CloudTranscription/*`. Live: `Services/StreamingTranscription/*`. → **add-transcription-provider** skill.
 - **Engine / orchestration** — `Whisper/VoiceInkEngine.swift` (owns `Recorder`, generates the WAV URL, drives the pipeline), `Whisper/TranscriptionPipeline.swift`, `Whisper/RecordingState.swift`, `Whisper/RecorderUIManager.swift`, `Services/TranscriptionSession.swift`. → **transcription-flow** skill.
 - **whisper.cpp bridge** — `Whisper/LibWhisper.swift`, `Whisper/WhisperModelManager.swift`, `Whisper/VoiceInkEngine+Protocols.swift`.
@@ -61,8 +62,8 @@ TranscriptionPipeline.run()                         ← Whisper/TranscriptionPip
 
 ## Gotchas
 
-- The transcription protocol returns a **plain `String`** — there is no timestamp/segment/speaker data anywhere in the model layer today.
-- On record start, `Recorder` **mutes system audio** (`MediaController.muteSystemAudio()`) and pauses media playback; it un-mutes on stop. Any feature that *captures* system audio must reconcile with this.
+- The base `TranscriptionService.transcribe(...)` returns a **plain `String`** (no timestamps). Segment timestamps come from the separate `SegmentingTranscriptionService` (local only), used by the multi-source path; `Transcription` now also carries optional `segmentsJSON`/`audioSourcesJSON`.
+- On record start, the single-source `Recorder` **mutes system audio** (`MediaController.muteSystemAudio()`) and pauses media playback; it un-mutes on stop. The multi-source path deliberately does NOT use `Recorder` (it drives `CoreAudioRecorder`/the tap directly), so it never mutes or pauses the app it's capturing — reconcile with this if you add another capture entry point.
 - Streaming is opt-in per model (`TranscriptionServiceRegistry.supportsStreaming`); most models are batch (transcribe a finished WAV file).
 - `FluidAudio` (SPM dependency, used for Parakeet) also provides **speaker diarization** — relevant before reaching for a cloud diarizer.
 

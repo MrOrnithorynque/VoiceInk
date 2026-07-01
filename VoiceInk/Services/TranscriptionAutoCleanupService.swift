@@ -69,8 +69,7 @@ class TranscriptionAutoCleanupService {
             return
         }
 
-        if let urlString = transcription.audioFileURL,
-           let url = URL(string: urlString) {
+        for url in transcription.allAudioFileURLs {
             do {
                 try FileManager.default.removeItem(at: url)
             } catch {
@@ -111,9 +110,7 @@ class TranscriptionAutoCleanupService {
             let items = try backgroundContext.fetch(descriptor)
             var deletedCount = 0
             for transcription in items {
-                if let urlString = transcription.audioFileURL,
-                   let url = URL(string: urlString),
-                   FileManager.default.fileExists(atPath: url.path) {
+                for url in transcription.allAudioFileURLs where FileManager.default.fileExists(atPath: url.path) {
                     try? FileManager.default.removeItem(at: url)
                 }
                 backgroundContext.delete(transcription)
@@ -143,13 +140,14 @@ class TranscriptionAutoCleanupService {
             let backgroundContext = ModelContext(modelContainer)
 
             var descriptor = FetchDescriptor<Transcription>()
-            descriptor.propertiesToFetch = [\.audioFileURL]
+            // Fetch audioSourcesJSON too so per-source (multi-source) WAVs are recognized as
+            // referenced — otherwise a still-retained conversation's secondary tracks would be
+            // deleted here as false "orphans".
+            descriptor.propertiesToFetch = [\.audioFileURL, \.audioSourcesJSON]
 
             let transcriptions = try backgroundContext.fetch(descriptor)
-            let referencedFiles = Set(transcriptions.compactMap { transcription -> String? in
-                guard let urlString = transcription.audioFileURL,
-                      let url = URL(string: urlString) else { return nil }
-                return url.lastPathComponent
+            let referencedFiles = Set(transcriptions.flatMap { transcription in
+                transcription.allAudioFileURLs.map { $0.lastPathComponent }
             })
 
             guard FileManager.default.fileExists(atPath: recordingsDirectory.path) else { return }

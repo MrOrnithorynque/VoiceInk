@@ -9,12 +9,23 @@ import os
 class VoiceInkEngine: NSObject, ObservableObject {
     @Published var recordingState: RecordingState = .idle
     @Published var shouldCancelRecording = false
+    /// Per-source live levels for the recorder UI during a multi-source recording.
+    @Published var multiSourceLevels: [MultiSourceLevel] = []
     var partialTranscript: String = ""
     var currentSession: TranscriptionSession?
 
     let recorder = Recorder()
     var recordedFile: URL? = nil
     let recordingsDirectory: URL
+
+    /// Active multi-source session, when the two-source feature is capturing. nil on the
+    /// single-source path (which is left completely unchanged).
+    private var multiSourceCoordinator: MultiSourceCaptureCoordinator?
+    /// Forwards the coordinator's combined level into `recorder.audioMeter` so the existing
+    /// mini/notch recorder visualizer animates during a multi-source recording.
+    private var multiSourceMeterTimer: Timer?
+    private var meterSilentTicks: [String: Int] = [:]
+    private var meterTickCount = 0
 
     // Injected managers
     let whisperModelManager: WhisperModelManager
@@ -84,6 +95,15 @@ class VoiceInkEngine: NSObject, ObservableObject {
         if recordingState == .recording {
             partialTranscript = ""
             recordingState = .transcribing
+
+            // Multi-source session: stop/merge via its own path (recorder wasn't used).
+            if let coordinator = multiSourceCoordinator {
+                stopMultiSourceMeter()
+                multiSourceCoordinator = nil
+                await handleMultiSourceStop(coordinator: coordinator)
+                return
+            }
+
             await recorder.stopRecording()
 
             if let recordedFile {
@@ -129,6 +149,11 @@ class VoiceInkEngine: NSObject, ObservableObject {
                 if granted {
                     Task {
                         do {
+                            // Two-source path takes over when enabled + effective local model.
+                            if await self.tryStartMultiSource(powerModeId: powerModeId) {
+                                return
+                            }
+
                             let fileName = "\(UUID().uuidString).wav"
                             let permanentURL = self.recordingsDirectory.appendingPathComponent(fileName)
                             self.recordedFile = permanentURL
@@ -251,6 +276,216 @@ class VoiceInkEngine: NSObject, ObservableObject {
         if recordingState != .idle {
             recordingState = .idle
         }
+    }
+
+    // MARK: - Multi-Source (two-source) Recording
+
+    /// Attempt to start a multi-source (mic + system audio) capture session. Returns true if
+    /// the two-source path has taken over the recording flow (started, or cleanly aborted);
+    /// false when it is not applicable and the caller should run the single-source path.
+    /// Atomic: on any failure to start, nothing is left running.
+    private func tryStartMultiSource(powerModeId: UUID?) async -> Bool {
+        guard UserDefaults.standard.bool(forKey: "TwoSourceTranscriptionEnabled") else { return false }
+        // Only local models can produce timestamped segments; otherwise use single-source.
+        guard transcriptionModelManager.currentTranscriptionModel?.provider == .local else { return false }
+
+        let sources: [CaptureSource]
+        do {
+            sources = try CaptureSourceFactory.makeSources(from: AudioSourceConfig.active)
+        } catch {
+            logger.notice("Multi-source unavailable, falling back to single source: \(error.localizedDescription, privacy: .public)")
+            return false
+        }
+
+        let coordinator = MultiSourceCaptureCoordinator(sources: sources)
+        let sessionID = UUID().uuidString
+        let directory = recordingsDirectory
+        do {
+            try await coordinator.start(urlFor: { _, index in
+                directory.appendingPathComponent("\(sessionID)-src\(index).wav")
+            })
+        } catch {
+            logger.error("❌ Multi-source capture failed to start: \(error.localizedDescription, privacy: .public)")
+            return false
+        }
+
+        // Mirror the single-source guard: if the recorder UI was dismissed / cancelled during
+        // async setup, abort this session (do not fall back — that would double-record).
+        guard recorderUIManager?.isMiniRecorderVisible ?? false, !shouldCancelRecording else {
+            await coordinator.cancel()
+            return true
+        }
+
+        multiSourceCoordinator = coordinator
+        recordingState = .recording
+        startMultiSourceMeter()
+        logger.notice("🎙️🔊 Multi-source recording started (\(coordinator.startedSources.count, privacy: .public) sources)")
+
+        await ActiveWindowService.shared.applyConfiguration(powerModeId: powerModeId)
+
+        // Warm the local model in the background (mirrors the single-source path).
+        Task.detached { [weak self] in
+            guard let self else { return }
+            if let model = await self.transcriptionModelManager.currentTranscriptionModel,
+               model.provider == .local,
+               let localWhisperModel = await self.whisperModelManager.availableModels.first(where: { $0.name == model.name }),
+               await self.whisperModelManager.whisperContext == nil {
+                try? await self.whisperModelManager.loadModel(localWhisperModel)
+            }
+        }
+
+        return true
+    }
+
+    /// Stop a multi-source session, then either assemble a merged transcript (effective local
+    /// model) or degrade to the single-source pipeline on the primary (mic) WAV.
+    private func handleMultiSourceStop(coordinator: MultiSourceCaptureCoordinator) async {
+        if shouldCancelRecording {
+            await coordinator.cancel()
+            shouldCancelRecording = false
+            recordingState = .idle
+            await cleanupResources()
+            return
+        }
+
+        let records = await coordinator.stop()
+        guard !records.isEmpty else {
+            logger.error("❌ Multi-source produced no audio — recording discarded")
+            coordinator.discardStartedFiles()
+            NotificationManager.shared.showNotification(
+                title: "No audio captured — recording discarded",
+                type: .error
+            )
+            recordingState = .idle
+            await cleanupResources()
+            return
+        }
+        // Primary = the microphone track (the user's own voice), chosen by kind — NEVER by
+        // array position, so a reordered tap at index 0 can't cause the mic to be dropped.
+        let primary = records.first(where: { $0.isMicrophone }) ?? records[0]
+
+        guard let model = transcriptionModelManager.currentTranscriptionModel else {
+            recordingState = .idle
+            await cleanupResources()
+            return
+        }
+
+        let assembler = MultiSourceAssembler(serviceRegistry: serviceRegistry, modelContext: modelContext)
+        let primaryDuration = await loadDuration(primary.fileURL)
+
+        // Re-check the EFFECTIVE model (PowerMode may have swapped to cloud during recording).
+        if records.count >= 2, assembler.canAssemble(model: model) {
+            let transcription = Transcription(
+                text: "",
+                duration: primaryDuration,
+                audioFileURL: primary.fileURL.absoluteString,
+                transcriptionStatus: .pending
+            )
+            modelContext.insert(transcription)
+            try? modelContext.save()
+            NotificationCenter.default.post(name: .transcriptionCreated, object: transcription)
+
+            await pipeline.runMultiSource(
+                transcription: transcription,
+                records: records,
+                model: model,
+                assembler: assembler,
+                shouldCancel: { [weak self] in self?.shouldCancelRecording ?? false },
+                onCleanup: { [weak self] in await self?.cleanupResources() },
+                onDismiss: { [weak self] in await self?.recorderUIManager?.dismissMiniRecorder() }
+            )
+            shouldCancelRecording = false
+            if recordingState != .idle { recordingState = .idle }
+        } else {
+            // Degrade: cloud/non-segmenting model or a single surviving source → transcribe
+            // the mic (primary) WAV through the normal pipeline; discard the other source files.
+            for extra in records where extra.fileURL != primary.fileURL {
+                try? FileManager.default.removeItem(at: extra.fileURL)
+            }
+            let transcription = Transcription(
+                text: "",
+                duration: primaryDuration,
+                audioFileURL: primary.fileURL.absoluteString,
+                transcriptionStatus: .pending
+            )
+            modelContext.insert(transcription)
+            try? modelContext.save()
+            NotificationCenter.default.post(name: .transcriptionCreated, object: transcription)
+            await runPipeline(on: transcription, audioURL: primary.fileURL)
+        }
+    }
+
+    private func loadDuration(_ url: URL) async -> TimeInterval {
+        let asset = AVURLAsset(url: url)
+        return (try? CMTimeGetSeconds(await asset.load(.duration))) ?? 0.0
+    }
+
+    /// Drive the recorder visualizer from the coordinator's combined level while recording
+    /// (the multi-source path bypasses `Recorder`, whose meter would otherwise stay flat).
+    private func startMultiSourceMeter() {
+        multiSourceMeterTimer?.invalidate()
+        meterSilentTicks = [:]
+        meterTickCount = 0
+        let timer = Timer(timeInterval: 0.05, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.tickMultiSourceMeter() }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        multiSourceMeterTimer = timer
+    }
+
+    /// Silence threshold (normalized) and how long (ticks × 0.05s) before a source is flagged
+    /// as producing no audio. Only evaluated after ~2.5s so the start isn't a false positive.
+    private static let meterSilenceLevel = 0.02
+    private static let meterSilenceTicks = 40   // 2.0s
+    private static let meterGraceTicks = 50     // 2.5s
+
+    private func tickMultiSourceMeter() {
+        guard let coordinator = multiSourceCoordinator else { return }
+        let meters = coordinator.sourceMeters
+        guard !meters.isEmpty else { return }
+        meterTickCount += 1
+
+        var combinedAvg: Float = -160
+        var combinedPeak: Float = -160
+        var levels: [MultiSourceLevel] = []
+        for (index, meter) in meters.enumerated() {
+            combinedAvg = max(combinedAvg, meter.average)
+            combinedPeak = max(combinedPeak, meter.peak)
+            let level = Double(Self.normalizeMeter(meter.peak))
+
+            if level < Self.meterSilenceLevel {
+                meterSilentTicks[meter.role, default: 0] += 1
+            } else {
+                meterSilentTicks[meter.role] = 0
+            }
+            let isSilent = meterTickCount > Self.meterGraceTicks
+                && (meterSilentTicks[meter.role] ?? 0) > Self.meterSilenceTicks
+
+            levels.append(MultiSourceLevel(role: meter.role, level: level, isSilent: isSilent, colorIndex: index))
+        }
+
+        recorder.audioMeter = AudioMeter(
+            averagePower: Double(Self.normalizeMeter(combinedAvg)),
+            peakPower: Double(Self.normalizeMeter(combinedPeak))
+        )
+        multiSourceLevels = levels
+    }
+
+    private func stopMultiSourceMeter() {
+        multiSourceMeterTimer?.invalidate()
+        multiSourceMeterTimer = nil
+        meterSilentTicks = [:]
+        meterTickCount = 0
+        multiSourceLevels = []
+        recorder.audioMeter = AudioMeter(averagePower: 0, peakPower: 0)
+    }
+
+    /// Map dB (−60…0) to a 0…1 level, matching Recorder's normalization.
+    private static func normalizeMeter(_ db: Float) -> Float {
+        let minDb: Float = -60, maxDb: Float = 0
+        if db < minDb { return 0 }
+        if db >= maxDb { return 1 }
+        return (db - minDb) / (maxDb - minDb)
     }
 
     // MARK: - Resource Cleanup

@@ -16,18 +16,22 @@ struct TranscriptionDetailView: View {
         VStack(spacing: 12) {
             ScrollView {
                 VStack(spacing: 16) {
-                    MessageBubble(
-                        label: "Original",
-                        text: transcription.text,
-                        isEnhanced: false
-                    )
-
-                    if let enhancedText = transcription.enhancedText {
+                    if transcription.hasSegments, let segments = transcription.decodedSegments {
+                        ConversationTranscriptView(segments: segments)
+                    } else {
                         MessageBubble(
-                            label: "Enhanced",
-                            text: enhancedText,
-                            isEnhanced: true
+                            label: "Original",
+                            text: transcription.text,
+                            isEnhanced: false
                         )
+
+                        if let enhancedText = transcription.enhancedText {
+                            MessageBubble(
+                                label: "Enhanced",
+                                text: enhancedText,
+                                isEnhanced: true
+                            )
+                        }
                     }
                 }
                 .padding(16)

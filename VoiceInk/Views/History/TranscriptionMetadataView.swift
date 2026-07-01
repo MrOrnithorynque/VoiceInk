@@ -87,6 +87,29 @@ struct TranscriptionMetadataView: View {
                         .fill(.thinMaterial)
                 )
 
+                if let sources = transcription.decodedSources, !sources.isEmpty {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("Audio Sources")
+                            .font(.system(size: 14, weight: .semibold))
+
+                        VStack(alignment: .leading, spacing: 8) {
+                            ForEach(Array(sources.enumerated()), id: \.element.id) { index, source in
+                                if index > 0 { Divider() }
+                                metadataRow(
+                                    icon: sourceIcon(for: source),
+                                    label: source.role,
+                                    value: source.deviceName ?? source.processBundleID ?? "System audio"
+                                )
+                            }
+                        }
+                        .padding(14)
+                        .background(
+                            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                .fill(.thinMaterial)
+                        )
+                    }
+                }
+
                 if transcription.aiRequestSystemMessage != nil || transcription.aiRequestUserMessage != nil {
                     VStack(alignment: .leading, spacing: 12) {
                         Text("AI Request")
@@ -153,6 +176,12 @@ struct TranscriptionMetadataView: View {
                 .foregroundColor(.primary)
                 .lineLimit(1)
         }
+    }
+
+    private func sourceIcon(for source: AudioSourceRecord) -> String {
+        if source.processBundleID != nil { return "app.badge.fill" }
+        if source.deviceName != nil { return "mic.fill" }
+        return "speaker.wave.2.fill"
     }
 
     private func powerModeDisplay(name: String?, emoji: String?) -> String? {

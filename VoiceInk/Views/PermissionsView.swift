@@ -1,6 +1,7 @@
 import SwiftUI
 import AVFoundation
 import Cocoa
+import CoreAudio
 import KeyboardShortcuts
 
 class PermissionManager: ObservableObject {
@@ -8,6 +9,12 @@ class PermissionManager: ObservableObject {
     @Published var isAccessibilityEnabled = false
     @Published var isScreenRecordingEnabled = false
     @Published var isKeyboardShortcutSet = false
+    /// System-audio capture (Core Audio process taps) is macOS 14.4+ only.
+    @Published var isSystemAudioCaptureAvailable: Bool = {
+        if #available(macOS 14.4, *) { return true } else { return false }
+    }()
+    /// Best-effort: whether a process tap can currently be created (no clean preflight API).
+    @Published var isSystemAudioCaptureGranted = false
     
     init() {
         // Start observing system events that might indicate permission changes
@@ -78,6 +85,37 @@ class PermissionManager: ObservableObject {
     func checkKeyboardShortcut() {
         DispatchQueue.main.async {
             self.isKeyboardShortcutSet = KeyboardShortcuts.getShortcut(for: .toggleMiniRecorder) != nil
+        }
+    }
+
+    /// Best-effort system-audio-capture check: try to create (then immediately destroy) a
+    /// global process tap. Success is a good indicator the capability is granted; the first
+    /// attempt may trigger the system's Audio Recording prompt. There is no public preflight
+    /// API for tap permission, so this is heuristic (a tap can succeed yet deliver silence).
+    private var didProbeSystemAudio = false
+
+    /// - Parameter force: re-probe even if already probed this session. The probe creates and
+    ///   immediately destroys a tap, so it runs once per session by default (not on every view
+    ///   appearance) and only re-runs on an explicit refresh/tap.
+    func checkSystemAudioCapture(force: Bool = false) {
+        guard #available(macOS 14.4, *) else {
+            DispatchQueue.main.async { self.isSystemAudioCaptureAvailable = false }
+            return
+        }
+        guard force || !didProbeSystemAudio else { return }
+        didProbeSystemAudio = true
+        let description = CATapDescription(stereoGlobalTapButExcludeProcesses: [])
+        description.isPrivate = true
+        description.muteBehavior = CATapMuteBehavior.unmuted
+        var tapID = AudioObjectID(kAudioObjectUnknown)
+        let status = AudioHardwareCreateProcessTap(description, &tapID)
+        let granted = (status == noErr && tapID != kAudioObjectUnknown)
+        if tapID != kAudioObjectUnknown {
+            AudioHardwareDestroyProcessTap(tapID)
+        }
+        DispatchQueue.main.async {
+            self.isSystemAudioCaptureAvailable = true
+            self.isSystemAudioCaptureGranted = granted
         }
     }
 }
@@ -279,6 +317,25 @@ struct PermissionsView: View {
                         infoTipMessage: "VoiceInk captures on-screen text to understand the context of your voice input, which significantly improves transcription accuracy. Your privacy is important: this data is processed locally and is not stored.",
                         infoTipLink: "https://tryvoiceink.com/docs/contextual-awareness"
                     )
+
+                    // System Audio Capture (Conversation Mode) — macOS 14.4+ only
+                    if permissionManager.isSystemAudioCaptureAvailable {
+                        PermissionCard(
+                            icon: "speaker.wave.2",
+                            title: "System Audio Capture",
+                            description: "Allow VoiceInk to record other apps' audio for Conversation Mode (mic + system audio).",
+                            isGranted: permissionManager.isSystemAudioCaptureGranted,
+                            buttonTitle: "Grant / Open System Settings",
+                            buttonAction: {
+                                permissionManager.checkSystemAudioCapture(force: true)
+                                if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy") {
+                                    NSWorkspace.shared.open(url)
+                                }
+                            },
+                            checkPermission: { permissionManager.checkSystemAudioCapture(force: true) },
+                            infoTipMessage: "Only needed if you use Conversation Mode (Settings → Audio Input). Requires macOS 14.4+ and a code-signed build; the first check may prompt for Audio Recording access."
+                        )
+                    }
                 }
             }
             .padding(24)
@@ -286,6 +343,7 @@ struct PermissionsView: View {
         .background(Color(NSColor.controlBackgroundColor))
         .onAppear {
             permissionManager.checkAllPermissions()
+            permissionManager.checkSystemAudioCapture()
         }
     }
 }

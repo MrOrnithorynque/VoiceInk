@@ -21,6 +21,17 @@ struct TranscriptionListItem: View {
                     Text(transcription.timestamp, format: .dateTime.month(.abbreviated).day().hour().minute())
                         .font(.system(size: 11, weight: .medium))
                         .foregroundColor(.secondary)
+                    if let speakers = transcription.speakerCount {
+                        Label("\(speakers) speakers", systemImage: "person.2.wave.2.fill")
+                            .font(.system(size: 9, weight: .semibold))
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 2)
+                            .background(
+                                RoundedRectangle(cornerRadius: 4, style: .continuous)
+                                    .fill(Color.accentColor.opacity(0.15))
+                            )
+                            .foregroundColor(.accentColor)
+                    }
                     Spacer()
                     if transcription.duration > 0 {
                         Text(transcription.duration.formatTiming())

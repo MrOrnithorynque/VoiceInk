@@ -3,7 +3,9 @@ import SwiftUI
 struct AudioInputSettingsView: View {
     @ObservedObject var audioDeviceManager = AudioDeviceManager.shared
     @Environment(\.colorScheme) private var colorScheme
-    
+    @AppStorage("TwoSourceTranscriptionEnabled") private var twoSourceEnabled = false
+    @AppStorage("ConversationSourcesMode") private var sourcesMode = "default"
+
     var body: some View {
         ScrollView {
             VStack(spacing: 0) {
@@ -26,9 +28,61 @@ struct AudioInputSettingsView: View {
             case .prioritized:
                 prioritizedDevicesSection
             }
+
+            systemAudioSection
         }
         .padding(.horizontal, 32)
         .padding(.vertical, 40)
+    }
+
+    private var systemAudioSection: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("System Audio (Conversation Mode)")
+                .font(.title2)
+                .fontWeight(.semibold)
+
+            Toggle(isOn: $twoSourceEnabled) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Transcribe microphone + system audio")
+                        .font(.body)
+                    Text("Records your mic (\u{201C}Me\u{201D}) and other apps\u{2019} audio (\u{201C}Them\u{201D}) at once and produces a single timestamped, speaker-labeled transcript.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .toggleStyle(.switch)
+
+            if twoSourceEnabled {
+                Picker("Sources", selection: $sourcesMode) {
+                    Text("Default (Mic + System)").tag("default")
+                    Text("Custom…").tag("custom")
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .onChange(of: sourcesMode) { _, newValue in
+                    if newValue == "default" { AudioSourceConfig.clearConfigs() }
+                }
+
+                if sourcesMode == "custom" {
+                    AudioSourcesSettingsView()
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                Label("Requires a local transcription model (Whisper / Parakeet).", systemImage: "cpu")
+                Label("Keeps other apps playing and audible while recording.", systemImage: "speaker.wave.2")
+                Label("First use asks for Audio Recording permission. Needs macOS 14.4+.", systemImage: "lock.shield")
+            }
+            .font(.caption)
+            .foregroundColor(.secondary)
+        }
+        .padding(20)
+        .background(
+            RoundedRectangle(cornerRadius: 12)
+                .fill(Color(NSColor.controlBackgroundColor))
+                .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.primary.opacity(0.08)))
+        )
     }
     
     private var heroSection: some View {

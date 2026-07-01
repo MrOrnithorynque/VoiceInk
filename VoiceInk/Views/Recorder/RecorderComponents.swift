@@ -293,11 +293,13 @@ struct RecorderStatusDisplay: View {
     let currentState: RecordingState
     let audioMeter: AudioMeter
     let menuBarHeight: CGFloat?
+    let multiSourceLevels: [MultiSourceLevel]
 
-    init(currentState: RecordingState, audioMeter: AudioMeter, menuBarHeight: CGFloat? = nil) {
+    init(currentState: RecordingState, audioMeter: AudioMeter, menuBarHeight: CGFloat? = nil, multiSourceLevels: [MultiSourceLevel] = []) {
         self.currentState = currentState
         self.audioMeter = audioMeter
         self.menuBarHeight = menuBarHeight
+        self.multiSourceLevels = multiSourceLevels
     }
 
     var body: some View {
@@ -307,6 +309,11 @@ struct RecorderStatusDisplay: View {
                     .transition(.opacity)
             } else if currentState == .transcribing {
                 ProcessingStatusDisplay(mode: .transcribing, color: .white)
+                    .transition(.opacity)
+            } else if currentState == .recording && !multiSourceLevels.isEmpty {
+                // Conversation mode: one tinted bar per source + live "no audio" hint.
+                MultiSourceLevelBarsView(levels: multiSourceLevels)
+                    .padding(.horizontal, 4)
                     .transition(.opacity)
             } else if currentState == .recording {
                 AudioVisualizer(

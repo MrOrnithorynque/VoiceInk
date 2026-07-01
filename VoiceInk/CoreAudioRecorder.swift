@@ -51,6 +51,12 @@ final class CoreAudioRecorder: @unchecked Sendable {
     /// Called on the audio thread with raw PCM data (16-bit, 16kHz, mono) for streaming.
     var onAudioChunk: ((_ data: Data) -> Void)?
 
+    /// Called once, on the audio thread, with the host time (`mach_absolute_time` units) of
+    /// the first delivered input buffer — used to align this stream onto a shared
+    /// `RecordingTimeline`. Unused (nil) on the single-source path → zero behavior change.
+    var onFirstBufferHostTime: ((_ hostTime: UInt64) -> Void)?
+    private var didReportFirstHostTime = false
+
     // MARK: - Initialization
 
     init() {}
@@ -79,6 +85,7 @@ final class CoreAudioRecorder: @unchecked Sendable {
 
         currentDeviceID = deviceID
         recordingURL = url
+        didReportFirstHostTime = false
 
         logger.notice("🎙️ Starting recording from device \(deviceID, privacy: .public)")
         logDeviceDetails(deviceID: deviceID)
@@ -551,6 +558,16 @@ final class CoreAudioRecorder: @unchecked Sendable {
 
         guard let audioUnit = audioUnit, isRecording, let renderBuf = renderBuffer else {
             return noErr
+        }
+
+        // Report the first buffer's host time once, to anchor this stream on the shared
+        // timeline (multi-source only; nil hook on the single-source path). Falls back to
+        // mach_absolute_time() if the driver didn't mark host time valid.
+        if !didReportFirstHostTime, let onFirstBufferHostTime = onFirstBufferHostTime {
+            didReportFirstHostTime = true
+            let ts = inTimeStamp.pointee
+            let host = (ts.mFlags.contains(.hostTimeValid) && ts.mHostTime != 0) ? ts.mHostTime : mach_absolute_time()
+            onFirstBufferHostTime(host)
         }
 
         // Use pre-allocated buffer for input data

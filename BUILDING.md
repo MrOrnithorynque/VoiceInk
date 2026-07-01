@@ -76,6 +76,14 @@ The `make local` command uses:
 
 Your normal `make all` / `make build` commands are completely unaffected.
 
+> **Conversation Mode (system-audio capture) needs a code-signed build.** The optional
+> "System Audio (Conversation Mode)" feature uses Core Audio process taps (macOS 14.4+). The
+> system's Audio Recording (TCC) prompt only fires reliably for a **stably code-signed**
+> binary — ad-hoc `make local` / raw `xcodebuild` builds can create the tap but silently
+> deliver **silence**. To validate this feature end-to-end, use a properly signed build and
+> grant the Audio Recording permission on first use (Settings → Permissions → "System Audio
+> Capture").
+
 ---
 
 ## Manual Build Process (Alternative)

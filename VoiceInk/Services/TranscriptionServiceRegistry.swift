@@ -44,6 +44,13 @@ class TranscriptionServiceRegistry {
         return try await service.transcribe(audioURL: audioURL, model: effectiveModel)
     }
 
+    /// The segment-capable service for `model`, or nil if this model can't produce
+    /// per-segment timestamps. The multi-source path uses this to decide whether it can
+    /// run (and otherwise degrades to single-source). Today only `.local` qualifies.
+    func segmentingService(for model: any TranscriptionModel) -> (any SegmentingTranscriptionService)? {
+        service(for: model.provider) as? SegmentingTranscriptionService
+    }
+
     /// Creates a streaming or file-based session depending on the model's capabilities.
     func createSession(for model: any TranscriptionModel, onPartialTranscript: ((String) -> Void)? = nil) -> TranscriptionSession {
         if supportsStreaming(model: model) {
