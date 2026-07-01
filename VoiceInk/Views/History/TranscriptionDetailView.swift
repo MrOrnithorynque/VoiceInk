@@ -37,8 +37,22 @@ struct TranscriptionDetailView: View {
                 .padding(16)
             }
 
-            if hasAudioFile, let urlString = transcription.audioFileURL,
-               let url = URL(string: urlString) {
+            if transcription.isMultiSource, let audioSources = transcription.decodedSources {
+                VStack(spacing: 0) {
+                    Divider()
+
+                    MultiTrackPlayerView(sources: audioSources)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .fill(Color(NSColor.controlBackgroundColor).opacity(0.5))
+                        )
+                        .padding(.horizontal, 12)
+                        .padding(.top, 6)
+                }
+            } else if hasAudioFile, let urlString = transcription.audioFileURL,
+                      let url = URL(string: urlString) {
                 VStack(spacing: 0) {
                     Divider()
 

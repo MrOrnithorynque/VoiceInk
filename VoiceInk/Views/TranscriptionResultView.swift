@@ -43,7 +43,7 @@ struct TranscriptionResultView: View {
                     }
                     Spacer()
                     AnimatedCopyButton(textToCopy: textForSelectedTab)
-                    AnimatedSaveButton(textToSave: textForSelectedTab)
+                    AnimatedSaveButton(textToSave: textForSelectedTab, transcription: transcription)
                 }
                 .padding(.vertical, 8)
                 .padding(.horizontal, 4)
@@ -51,7 +51,7 @@ struct TranscriptionResultView: View {
                 HStack {
                     Spacer()
                     AnimatedCopyButton(textToCopy: textForSelectedTab)
-                    AnimatedSaveButton(textToSave: textForSelectedTab)
+                    AnimatedSaveButton(textToSave: textForSelectedTab, transcription: transcription)
                 }
             }
             

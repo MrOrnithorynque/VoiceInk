@@ -3,17 +3,19 @@ import UniformTypeIdentifiers
 
 struct AnimatedSaveButton: View {
     let textToSave: String
+    /// When set, exports route through `MultiSourceExportService` (and multi-source rows also
+    /// offer VTT/SRT). When nil, the legacy raw-text TXT/MD save is used.
+    var transcription: Transcription? = nil
+
     @State private var isSaved: Bool = false
-    @State private var showingSavePanel = false
-    
+
     var body: some View {
         Menu {
-            Button("Save as TXT") {
-                saveFile(as: .plainText, extension: "txt")
-            }
-            
-            Button("Save as MD") {
-                saveFile(as: .text, extension: "md")
+            Button("Save as TXT") { handleSave(.txt) }
+            Button("Save as MD") { handleSave(.markdown) }
+            if transcription?.isMultiSource == true {
+                Button("Save as VTT") { handleSave(.vtt) }
+                Button("Save as SRT") { handleSave(.srt) }
             }
         } label: {
             HStack(spacing: 4) {
@@ -35,74 +37,45 @@ struct AnimatedSaveButton: View {
         .scaleEffect(isSaved ? 1.05 : 1.0)
         .animation(.spring(response: 0.3, dampingFraction: 0.7), value: isSaved)
     }
-    
-    private func saveFile(as contentType: UTType, extension fileExtension: String) {
+
+    private func handleSave(_ format: TranscriptExportFormat) {
+        let saved: Bool
+        if let transcription {
+            saved = MultiSourceExportService().export(transcription, as: format)
+        } else {
+            saved = saveRawText(format)
+        }
+        guard saved else { return }
+        withAnimation { isSaved = true }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+            withAnimation { isSaved = false }
+        }
+    }
+
+    /// Legacy path for callers that only have text (no Transcription).
+    private func saveRawText(_ format: TranscriptExportFormat) -> Bool {
         let panel = NSSavePanel()
-        panel.allowedContentTypes = [contentType]
-        panel.nameFieldStringValue = "\(generateFileName()).\(fileExtension)"
+        panel.allowedContentTypes = [format.contentType]
+        panel.nameFieldStringValue = "\(TranscriptFilename.suggested(from: textToSave)).\(format.fileExtension)"
         panel.title = "Save Transcription"
-        
-        if panel.runModal() == .OK {
-            guard let url = panel.url else { return }
-            
-            do {
-                let content = fileExtension == "md" ? formatAsMarkdown(textToSave) : textToSave
-                try content.write(to: url, atomically: true, encoding: .utf8)
-                
-                withAnimation {
-                    isSaved = true
-                }
-                
-                // Reset the animation after a delay
-                DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
-                    withAnimation {
-                        isSaved = false
-                    }
-                }
-            } catch {
-                print("Failed to save file: \(error.localizedDescription)")
-            }
+        guard panel.runModal() == .OK, let url = panel.url else { return false }
+        let content = (format == .markdown) ? legacyMarkdown(textToSave) : textToSave
+        do {
+            try content.write(to: url, atomically: true, encoding: .utf8)
+            return true
+        } catch {
+            print("Failed to save file: \(error.localizedDescription)")
+            return false
         }
     }
-    
-    private func generateFileName() -> String {
-        // Clean the text and split into words
-        let cleanedText = textToSave
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .replacingOccurrences(of: "\n", with: " ")
-            .replacingOccurrences(of: "\r", with: " ")
-        
-        let words = cleanedText.components(separatedBy: .whitespaces)
-            .filter { !$0.isEmpty }
-        
-        // Take first 5-8 words (depending on length)
-        let wordCount = min(words.count, words.count <= 3 ? words.count : (words.count <= 6 ? 6 : 8))
-        let selectedWords = Array(words.prefix(wordCount))
-        
-        if selectedWords.isEmpty {
-            return "transcription"
-        }
-        
-        // Create filename by joining words and cleaning invalid characters
-        let fileName = selectedWords.joined(separator: "-")
-            .lowercased()
-            .replacingOccurrences(of: "[^a-z0-9\\-]", with: "", options: .regularExpression)
-            .replacingOccurrences(of: "--+", with: "-", options: .regularExpression)
-            .trimmingCharacters(in: CharacterSet(charactersIn: "-"))
-        
-        // Ensure filename isn't empty and isn't too long
-        let finalFileName = fileName.isEmpty ? "transcription" : String(fileName.prefix(50))
-        
-        return finalFileName
-    }
-    
-    private func formatAsMarkdown(_ text: String) -> String {
+
+    private func legacyMarkdown(_ text: String) -> String {
         let timestamp = DateFormatter.localizedString(from: Date(), dateStyle: .medium, timeStyle: .short)
         return """
         # Transcription
-        
+
         **Date:** \(timestamp)
-        
+
         \(text)
         """
     }
@@ -110,11 +83,7 @@ struct AnimatedSaveButton: View {
 
 struct AnimatedSaveButton_Previews: PreviewProvider {
     static var previews: some View {
-        VStack(spacing: 20) {
-            AnimatedSaveButton(textToSave: "Hello world this is a sample transcription text")
-            Text("Save Button Preview")
-                .padding()
-        }
-        .padding()
+        AnimatedSaveButton(textToSave: "Hello world this is a sample transcription text")
+            .padding()
     }
-} 
+}
