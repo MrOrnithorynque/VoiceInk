@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(rm -rf build-macos-ninja)",
+      "Bash(cmake -B build-macos-ninja -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES=\"arm64;x86_64\" -DCMAKE_OSX_DEPLOYMENT_TARGET=13.3 -DBUILD_SHARED_LIBS=OFF -DWHISPER_BUILD_EXAMPLES=OFF -DWHISPER_BUILD_TESTS=OFF -DWHISPER_BUILD_SERVER=OFF -DGGML_METAL_EMBED_LIBRARY=ON -DGGML_BLAS_DEFAULT=ON -DGGML_METAL=ON -DGGML_METAL_USE_BF16=ON -DGGML_NATIVE=OFF -DGGML_OPENMP=OFF)",
+      "Bash(xcodebuild -runFirstLaunch)",
+      "Bash(xcodebuild -create-xcframework -framework build-macos-framework/whisper.framework -output build-apple/whisper.xcframework)",
+      "Bash(security find-identity:*)",
+      "Bash(xcodebuild -project VoiceInk.xcodeproj -scheme VoiceInk -configuration Debug build)",
+      "Bash(xcodebuild -project VoiceInk.xcodeproj -scheme VoiceInk -configuration Debug -allowProvisioningUpdates build)",
+      "Bash(defaults read:*)",
+      "Bash(make local:*)",
+      "Bash(open ~/Downloads/VoiceInk.app)",
+      "Bash(hdiutil create:*)"
+    ],
+    "defaultMode": "bypassPermissions"
+  }
+}
