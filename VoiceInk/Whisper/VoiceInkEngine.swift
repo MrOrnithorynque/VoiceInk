@@ -352,6 +352,16 @@ class VoiceInkEngine: NSObject, ObservableObject {
             }
         }
 
+        // Caption bridge: open the buffering bracket so the extension starts observing.
+        // Non-blocking; if the listener can't start, captions simply never arrive and the
+        // transcript keeps "Speaker N" labels (meeting-name-feed-spec.md degrade rules).
+        if UserDefaults.standard.bool(forKey: "CaptionBridgeEnabled") {
+            Task {
+                try? await CaptionBridgeServer.shared.ensureRunning()
+                await CaptionBridgeServer.shared.beginSession()
+            }
+        }
+
         return true
     }
 
@@ -360,6 +370,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
     private func handleMultiSourceStop(coordinator: MultiSourceCaptureCoordinator) async {
         if shouldCancelRecording {
             await coordinator.cancel()
+            _ = await endCaptionSession()   // discard: cancelled recording
             shouldCancelRecording = false
             recordingState = .idle
             await cleanupResources()
@@ -367,6 +378,9 @@ class VoiceInkEngine: NSObject, ObservableObject {
         }
 
         let records = await coordinator.stop()
+        // Close the caption bracket on EVERY exit path below; only the assemble path will
+        // consume the events (M2 resolver). Until then they are counted and dropped.
+        let captionEvents = await endCaptionSession()
         guard !records.isEmpty else {
             logger.error("❌ Multi-source produced no audio — recording discarded")
             coordinator.discardStartedFiles()
@@ -393,6 +407,10 @@ class VoiceInkEngine: NSObject, ObservableObject {
 
         // Re-check the EFFECTIVE model (PowerMode may have swapped to cloud during recording).
         if records.count >= 2, assembler.canAssemble(model: model) {
+            if !captionEvents.isEmpty {
+                // M1 plumbing checkpoint — the M2 CaptionNameResolver will consume these.
+                logger.notice("Collected \(captionEvents.count, privacy: .public) caption event(s); name resolution lands in M2")
+            }
             let transcription = Transcription(
                 text: "",
                 duration: primaryDuration,
@@ -431,6 +449,13 @@ class VoiceInkEngine: NSObject, ObservableObject {
             NotificationCenter.default.post(name: .transcriptionCreated, object: transcription)
             await runPipeline(on: transcription, audioURL: primary.fileURL)
         }
+    }
+
+    /// Close the caption-bridge bracket (no-op when the feature is off). Never blocks on
+    /// the network — returns only what already arrived (name-feed spec, trap-6 analog).
+    private func endCaptionSession() async -> [CaptionBridgeServer.CaptionEvent] {
+        guard UserDefaults.standard.bool(forKey: "CaptionBridgeEnabled") else { return [] }
+        return await CaptionBridgeServer.shared.endSession()
     }
 
     private func loadDuration(_ url: URL) async -> TimeInterval {

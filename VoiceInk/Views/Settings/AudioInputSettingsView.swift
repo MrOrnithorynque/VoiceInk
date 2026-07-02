@@ -6,7 +6,10 @@ struct AudioInputSettingsView: View {
     @AppStorage("TwoSourceTranscriptionEnabled") private var twoSourceEnabled = false
     @AppStorage("ConversationSourcesMode") private var sourcesMode = "default"
     @AppStorage("ConversationDiarizationEnabled") private var diarizationEnabled = false
+    @AppStorage("CaptionBridgeEnabled") private var captionBridgeEnabled = false
     @State private var diarizationSetupError: String?
+    @State private var bridgeSetupError: String?
+    @State private var tokenCopied = false
 
     var body: some View {
         ScrollView {
@@ -101,6 +104,10 @@ struct AudioInputSettingsView: View {
                 } message: {
                     Text(diarizationSetupError ?? "")
                 }
+
+                if diarizationEnabled {
+                    captionBridgeToggle
+                }
             }
 
             VStack(alignment: .leading, spacing: 6) {
@@ -119,6 +126,68 @@ struct AudioInputSettingsView: View {
         )
     }
     
+    /// Caption-bridge (meeting names) toggle — mirrors the diarization toggle's
+    /// setup-with-revert-on-failure pattern. Requires diarization (names need clusters).
+    private var captionBridgeToggle: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Toggle(isOn: $captionBridgeEnabled) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Name speakers from your meeting page (beta)")
+                        .font(.body)
+                    Text("With the VoiceInk browser extension installed, real participant names from Google Meet / Teams captions replace \u{201C}Speaker 1\u{201D}, \u{201C}Speaker 2\u{201D}\u{2026} automatically. Names never leave your Mac. Turn on captions in the meeting.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .toggleStyle(.switch)
+            .onChange(of: captionBridgeEnabled) { _, enabled in
+                Task {
+                    if enabled {
+                        do {
+                            try await CaptionBridgeServer.shared.ensureRunning()
+                        } catch {
+                            captionBridgeEnabled = false
+                            bridgeSetupError = error.localizedDescription
+                        }
+                    } else {
+                        await CaptionBridgeServer.shared.stop()
+                    }
+                }
+            }
+            .alert("Couldn't start the meeting-names bridge",
+                   isPresented: Binding(get: { bridgeSetupError != nil },
+                                        set: { if !$0 { bridgeSetupError = nil } })) {
+                Button("OK", role: .cancel) { bridgeSetupError = nil }
+            } message: {
+                Text(bridgeSetupError ?? "")
+            }
+
+            if captionBridgeEnabled {
+                HStack(spacing: 8) {
+                    Text("Pairing token")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    Text(CaptionBridgeServer.pairingToken())
+                        .font(.system(.caption, design: .monospaced))
+                        .textSelection(.enabled)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Button {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(CaptionBridgeServer.pairingToken(), forType: .string)
+                        tokenCopied = true
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { tokenCopied = false }
+                    } label: {
+                        Image(systemName: tokenCopied ? "checkmark" : "doc.on.doc")
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Copy the token, then paste it into the VoiceInk extension's popup")
+                }
+            }
+        }
+    }
+
     private var heroSection: some View {
         CompactHeroSection(
             icon: "waveform",
