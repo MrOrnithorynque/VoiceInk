@@ -48,9 +48,10 @@ after the fact. Fully on-device; the mic track is never diarized (it is ground-t
 9. **`Transcription.speakerCount`** switches to counting distinct segment speakers when
    segments exist (today it counts source roles, which would undercount diarized transcripts).
 10. **Out of scope (deliberate)**: cross-meeting voice enrollment (`SpeakerManager` supports it;
-    later), the browser-extension name feed (separate roof, see research in this branch's PR),
-    Sortformer/offline VBx variants, MultiTrackPlayer lane-color unification (lanes are
-    per-source, transcript colors per-speaker — semantically distinct; documented divergence).
+    later), the browser-extension name feed (separate roof — see
+    `docs/plans/meeting-mode-research.md`), Sortformer/offline VBx variants, MultiTrackPlayer
+    lane-color unification (lanes are per-source, transcript colors per-speaker — semantically
+    distinct; documented divergence).
 
 ## Files
 
