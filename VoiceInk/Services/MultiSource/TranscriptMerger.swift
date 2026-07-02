@@ -17,6 +17,10 @@ enum TranscriptMerger {
     /// Merge per-source segments into one ordered `[TranscriptSegment]`.
     /// - Parameter clean: per-segment text transform (filter/format/word-replace), applied
     ///   BEFORE composition. Kept as a closure so this function stays pure and testable.
+    ///
+    /// A raw segment's `speaker` is normally empty (conformers return `speaker: ""`) and gets
+    /// the source's role; a non-empty `speaker` — set by the opt-in diarization stage before
+    /// merge — survives untouched, as does its `clusterId`.
     static func merge(_ sources: [SourceSegments], clean: (String) -> String) -> [TranscriptSegment] {
         sources
             .flatMap { source -> [TranscriptSegment] in
@@ -24,10 +28,11 @@ enum TranscriptMerger {
                     let text = clean(seg.text).trimmingCharacters(in: .whitespacesAndNewlines)
                     guard !text.isEmpty else { return nil }
                     return TranscriptSegment(
-                        speaker: source.record.role,
+                        speaker: seg.speaker.isEmpty ? source.record.role : seg.speaker,
                         text: text,
                         start: seg.start + source.record.t0Offset,
-                        end: seg.end + source.record.t0Offset
+                        end: seg.end + source.record.t0Offset,
+                        clusterId: seg.clusterId
                     )
                 }
             }

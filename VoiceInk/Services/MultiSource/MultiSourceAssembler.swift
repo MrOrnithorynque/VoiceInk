@@ -43,10 +43,40 @@ struct MultiSourceAssembler {
             perSource.append(.init(record: record, segments: raw))
         }
 
+        if UserDefaults.standard.bool(forKey: "ConversationDiarizationEnabled") {
+            perSource = await diarizeNonMicSources(perSource)
+        }
+
         let clean = makeCleaner()
         let merged = TranscriptMerger.merge(perSource, clean: clean)
         let flat = TranscriptMerger.composeFlatText(merged)
         return (merged, flat)
+    }
+
+    /// Opt-in stage: diarize each non-mic source's WAV, then label all sources in ONE pass so
+    /// "Speaker N" numbering follows shared-timeline first appearance even across multiple
+    /// tapped sources. The mic track is ground truth and never diarized. Any per-source
+    /// failure — models not downloaded (diarize is cache-only, never network), unreadable
+    /// WAV — logs and keeps that source's role labels; diarization can degrade but never
+    /// fail the transcript.
+    private func diarizeNonMicSources(_ perSource: [TranscriptMerger.SourceSegments]) async -> [TranscriptMerger.SourceSegments] {
+        var diarized: [SegmentSpeakerLabeler.DiarizedSource] = []
+        for source in perSource {
+            guard !source.record.isMicrophone, !source.segments.isEmpty else {
+                diarized.append(.init(source: source, ranges: []))
+                continue
+            }
+            do {
+                let ranges = try await SpeakerDiarizationService.shared.diarize(audioURL: source.record.fileURL)
+                let clusters = Set(ranges.map(\.speakerId)).count
+                logger.notice("Diarized '\(source.record.role, privacy: .public)': \(clusters, privacy: .public) speaker(s)")
+                diarized.append(.init(source: source, ranges: ranges))
+            } catch {
+                logger.error("Diarization skipped for '\(source.record.role, privacy: .public)', keeping role label: \(error.localizedDescription, privacy: .public)")
+                diarized.append(.init(source: source, ranges: []))
+            }
+        }
+        return SegmentSpeakerLabeler.labelAll(diarized)
     }
 
     /// Per-segment text cleaning: the same filter → format → word-replace chain the

@@ -12,7 +12,9 @@ import Foundation
 struct MultiSourceTranscript: Codable, Hashable {
     /// Current on-disk schema version. Bump when `TranscriptSegment` / `AudioSourceRecord`
     /// gain fields or the persistence shape changes.
-    static let currentSchemaVersion = 1
+    /// v2: `TranscriptSegment.clusterId` (optional diarization cluster key; v1 rows decode
+    /// with it nil, v1 builds ignore the extra key).
+    static let currentSchemaVersion = 2
 
     var schemaVersion: Int
     var segments: [TranscriptSegment]

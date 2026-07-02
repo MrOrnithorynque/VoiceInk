@@ -5,6 +5,8 @@ struct AudioInputSettingsView: View {
     @Environment(\.colorScheme) private var colorScheme
     @AppStorage("TwoSourceTranscriptionEnabled") private var twoSourceEnabled = false
     @AppStorage("ConversationSourcesMode") private var sourcesMode = "default"
+    @AppStorage("ConversationDiarizationEnabled") private var diarizationEnabled = false
+    @State private var diarizationSetupError: String?
 
     var body: some View {
         ScrollView {
@@ -66,6 +68,38 @@ struct AudioInputSettingsView: View {
 
                 if sourcesMode == "custom" {
                     AudioSourcesSettingsView()
+                }
+
+                Toggle(isOn: $diarizationEnabled) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Detect multiple speakers (beta)")
+                            .font(.body)
+                        Text("Splits the system-audio side of a conversation into \u{201C}Speaker 1\u{201D}, \u{201C}Speaker 2\u{201D}, … using on-device voice analysis. Speakers can be renamed in the transcript. Downloads a small model on first use; audio never leaves your Mac.")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .toggleStyle(.switch)
+                .onChange(of: diarizationEnabled) { _, enabled in
+                    guard enabled else { return }
+                    // Download here (cache-first) — the pipeline itself is cache-only and
+                    // degrades to role labels, so failure must be surfaced NOW, not swallowed.
+                    Task {
+                        do {
+                            try await SpeakerDiarizationService.shared.prepareModels()
+                        } catch {
+                            diarizationEnabled = false
+                            diarizationSetupError = error.localizedDescription
+                        }
+                    }
+                }
+                .alert("Couldn't download speaker-detection models",
+                       isPresented: Binding(get: { diarizationSetupError != nil },
+                                            set: { if !$0 { diarizationSetupError = nil } })) {
+                    Button("OK", role: .cancel) { diarizationSetupError = nil }
+                } message: {
+                    Text(diarizationSetupError ?? "")
                 }
             }
 

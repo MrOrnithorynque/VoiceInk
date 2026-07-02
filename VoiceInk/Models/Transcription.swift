@@ -78,8 +78,24 @@ extension Transcription {
     var decodedSources: [AudioSourceRecord]? { MultiSourceTranscript.decodeSources(audioSourcesJSON) }
 
     /// Distinct speaker count for the History "N speakers" badge (nil if not multi-source).
+    /// Counts distinct segment speakers so diarized transcripts ("Me" + "Speaker 1/2") report
+    /// every detected voice; falls back to source roles when segments are missing.
     var speakerCount: Int? {
         guard let sources = decodedSources, sources.count > 1 else { return nil }
+        if let segments = decodedSegments, !segments.isEmpty {
+            var labels = Set(segments.map { $0.speaker })
+            // When a track was split into "Speaker N" clusters, diarizer-gap segments on the
+            // same track still display the role ("Them"); that's spillover of an already
+            // counted physical track, not an extra voice — drop the role from the count.
+            for source in sources {
+                let rolePrefix = "\(source.role)#"
+                let hasMintedClusters = segments.contains {
+                    ($0.clusterId?.hasPrefix(rolePrefix) ?? false) && $0.speaker != source.role
+                }
+                if hasMintedClusters { labels.remove(source.role) }
+            }
+            return labels.count
+        }
         return Set(sources.map { $0.role }).count
     }
 

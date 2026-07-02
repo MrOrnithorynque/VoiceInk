@@ -1,7 +1,9 @@
 import SwiftUI
+import SwiftData
 
 struct TranscriptionDetailView: View {
     let transcription: Transcription
+    @Environment(\.modelContext) private var modelContext
 
     private var hasAudioFile: Bool {
         if let urlString = transcription.audioFileURL,
@@ -17,7 +19,8 @@ struct TranscriptionDetailView: View {
             ScrollView {
                 VStack(spacing: 16) {
                     if transcription.hasSegments, let segments = transcription.decodedSegments {
-                        ConversationTranscriptView(segments: segments)
+                        ConversationTranscriptView(segments: segments,
+                                                   onRenameSpeaker: renameSpeaker)
                     } else {
                         MessageBubble(
                             label: "Original",
@@ -70,6 +73,19 @@ struct TranscriptionDetailView: View {
         }
         .padding(.vertical, 12)
         .background(Color(NSColor.controlBackgroundColor))
+    }
+
+    /// Rewrite one speaker label across the transcript. Persists BOTH representations:
+    /// `segmentsJSON` (drives this view + MD/VTT/SRT export) and the recomposed flat
+    /// `text` (drives list previews, search, .txt/CSV export) — leaving `text` stale is
+    /// the known trap (docs/plans/meeting-diarization-spec.md §8).
+    private func renameSpeaker(from oldLabel: String, to newLabel: String) {
+        guard let segments = transcription.decodedSegments else { return }
+        let renamed = SegmentSpeakerLabeler.rename(segments: segments, from: oldLabel, to: newLabel)
+        guard renamed != segments else { return }
+        transcription.segmentsJSON = MultiSourceTranscript.encodeSegments(renamed)
+        transcription.text = TranscriptMerger.composeFlatText(renamed)
+        try? modelContext.save()
     }
 }
 

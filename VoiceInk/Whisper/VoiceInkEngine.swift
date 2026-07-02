@@ -288,7 +288,8 @@ class VoiceInkEngine: NSObject, ObservableObject {
         guard UserDefaults.standard.bool(forKey: "TwoSourceTranscriptionEnabled") else { return false }
         // Conversation Mode is model-agnostic: it works with any model whose service can emit
         // per-segment timestamps (whisper OR Parakeet today). We run the selected model once per
-        // source WAV and interleave by timestamp — no diarization needed (each file is one role).
+        // source WAV and interleave by timestamp — each file is one role by default; the opt-in
+        // diarization stage (ConversationDiarizationEnabled) further splits non-mic tracks.
         guard let currentModel = transcriptionModelManager.currentTranscriptionModel,
               serviceRegistry.segmentingService(for: currentModel) != nil else { return false }
 
@@ -338,6 +339,16 @@ class VoiceInkEngine: NSObject, ObservableObject {
                 }
             } else if let parakeetModel = model as? ParakeetModel {
                 try? await self.serviceRegistry.parakeetTranscriptionService.loadModel(for: parakeetModel)
+            }
+        }
+
+        // Same warm-up for the opt-in diarizer: (re)attempt the cache-first model download
+        // WHILE recording, because the post-stop pipeline is deliberately cache-only and
+        // degrades to role labels if models are missing (e.g. the settings-toggle download
+        // failed offline). Errors are non-fatal here — degrade, don't block.
+        if UserDefaults.standard.bool(forKey: "ConversationDiarizationEnabled") {
+            Task.detached {
+                try? await SpeakerDiarizationService.shared.prepareModels()
             }
         }
 

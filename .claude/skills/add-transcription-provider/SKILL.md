@@ -53,11 +53,13 @@ separate additive protocol: `SegmentingTranscriptionService.transcribeWithSegmen
 `ParakeetTranscriptionService` (FluidAudio token timings → `ParakeetSegmentGrouper`). The
 multi-source path consumes it via `TranscriptionServiceRegistry.segmentingService(for:)` — to make
 a NEW provider Conversation-Mode-eligible, conform its service (see the **conversation-mode**
-skill). Speaker **diarization** is still not supported (multi-source gets speakers ground-truth
-per capture source instead). Note:
+skill). Speaker **diarization** ships as an opt-in Conversation Mode stage on NON-mic tracks
+(`SpeakerDiarizationService`, FluidAudio, gated on `ConversationDiarizationEnabled` — see the
+**conversation-mode** skill); source-role ground truth remains the default. Note:
 
-- **FluidAudio** (already a dependency, used for Parakeet) also provides **speaker diarization**.
-- Cloud/streaming providers with native diarization: Deepgram, Soniox (both already integrated as providers).
+- Cloud/streaming providers with native diarization: Deepgram, Soniox (both already integrated as
+  providers) — a new provider exposing its own diarization should still return `speaker: ""`
+  segments and let the local stage/roles label them, unless a deliberate design says otherwise.
 
 ## Checklist
 

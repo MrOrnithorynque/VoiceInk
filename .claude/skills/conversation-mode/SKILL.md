@@ -1,13 +1,16 @@
 ---
 name: conversation-mode
-description: Understand or modify VoiceInk's multi-source "Conversation Mode" — recording mic + system/app audio at once into one interleaved, timestamped, speaker-labeled transcript. Use for any work on Services/MultiSource/*, the multi-source branches of VoiceInkEngine/TranscriptionPipeline, the N-source settings UI, multi-track playback, or Markdown/VTT/SRT export. Covers the architecture, the load-bearing invariants, the correctness traps, and the persistence + deferred-migration decision.
+description: Understand or modify VoiceInk's multi-source "Conversation Mode" — recording mic + system/app audio at once into one interleaved, timestamped, speaker-labeled transcript, with opt-in on-device speaker diarization (“Speaker N” detection/renaming). Use for any work on Services/MultiSource/*, the multi-source branches of VoiceInkEngine/TranscriptionPipeline, the N-source settings UI, multi-track playback, or Markdown/VTT/SRT export. Covers the architecture, the load-bearing invariants, the correctness traps, and the persistence + deferred-migration decision.
 ---
 
 # Conversation Mode (multi-source transcription)
 
 Opt-in, **on-device / segment-capable model only**, macOS 14.4+. Captures N audio sources
 simultaneously and produces one interleaved transcript (`[00:07] Me: … / [00:12] Them: …`).
-Speaker identity is **ground-truth by capture source** — no ML diarization. **Model-agnostic:**
+Speaker identity is **ground-truth by capture source** by default; a second opt-in
+(`ConversationDiarizationEnabled`) runs **on-device FluidAudio diarization on non-mic tracks
+only**, splitting them into renamable "Speaker N" labels (`clusterId` provenance on the
+segment; the mic track is never diarized). **Model-agnostic:**
 it runs the *selected* model once per source WAV and interleaves by timestamp, so any service that
 conforms to `SegmentingTranscriptionService` qualifies — today **whisper `LocalTranscriptionService`
 AND `ParakeetTranscriptionService`** (FluidAudio token timings → `ParakeetSegmentGrouper`). Gated on
@@ -25,18 +28,24 @@ AudioSourceConfig.active            (custom [AudioSourceConfig] in UserDefaults,
    → each source writes a 16k/mono/Int16 WAV + reports first-buffer host time → t0Offset
    → VoiceInkEngine.handleMultiSourceStop → MultiSourceAssembler
         • SegmentingTranscriptionService.transcribeWithSegments(wav)  (VAD-off; whisper or Parakeet)
-        • TranscriptMerger.merge  (clean per-segment → shift by t0Offset → flatMap → sort)
+        • [opt-in] SpeakerDiarizationService.diarize(non-mic wavs) → SegmentSpeakerLabeler.labelAll
+          (cluster per segment by overlap; "Speaker N" minted globally by shared-timeline first
+          appearance; single-cluster source keeps its role; failure degrades to role labels)
+        • TranscriptMerger.merge  (clean per-segment → shift by t0Offset → flatMap → sort;
+          respects a pre-set non-empty seg.speaker instead of clobbering with role)
    → TranscriptionPipeline.runMultiSource  (persist segmentsJSON/audioSourcesJSON, paste flat text)
 ```
 
 Key files: `Services/MultiSource/` (CaptureSource, MicCaptureSource, SystemAudioTapRecorder,
 MultiSourceCaptureCoordinator, RecordingTimeline, TranscriptMerger, MultiSourceAssembler,
-CaptureSourceFactory, AudioSourceConfig, MultiSourceTranscript, CoreAudioUtils,
-AudioProcessEnumerator, MultiTrackPlayer), `Whisper/VoiceInkEngine.swift` +
-`TranscriptionPipeline.swift`, `Models/{TranscriptSegment,AudioSourceRecord}.swift`,
+SpeakerDiarizationService, SegmentSpeakerLabeler, CaptureSourceFactory, AudioSourceConfig,
+MultiSourceTranscript, CoreAudioUtils, AudioProcessEnumerator, MultiTrackPlayer),
+`Whisper/VoiceInkEngine.swift` + `TranscriptionPipeline.swift`,
+`Models/{TranscriptSegment,AudioSourceRecord}.swift`,
 `Views/{ConversationTranscriptView,MultiTrackPlayerView}.swift`,
-`Views/Settings/AudioSourcesSettingsView.swift`, `Services/Export/*`. Capture-API details live in
+`Views/Settings/{AudioSourcesSettingsView,AudioInputSettingsView}.swift`, `Services/Export/*`. Capture-API details live in
 the **core-audio-capture** skill; whisper timestamps in **add-transcription-provider**.
+Diarization design decisions: `docs/plans/meeting-diarization-spec.md`.
 
 ## Load-bearing invariants (do not break — the review caught bugs in each)
 
@@ -58,7 +67,7 @@ the **core-audio-capture** skill; whisper timestamps in **add-transcription-prov
    "Them" sources would collapse. `AudioSourcesViewModel` enforces uniqueness (+ soft cap 4, no
    duplicate mic device incl. nil↔default, ≥1 mic).
 
-## The 4 correctness traps (why the pipeline has a separate branch)
+## The 6 correctness traps (why the pipeline has a separate branch)
 
 1. **Bracket filter strips `[mm:ss]`.** `TranscriptionOutputFilter` deletes anything in `[…]`.
    The multi-source path cleans **per-segment BEFORE composition** (in `MultiSourceAssembler`),
@@ -72,6 +81,19 @@ the **core-audio-capture** skill; whisper timestamps in **add-transcription-prov
    (never `Recorder`), so it never mutes/pauses the app it's capturing.
 4. **Enhancement mangling.** `runMultiSource` **skips AI enhancement** (off by default) so the
    LLM can't reflow the labeled `[mm:ss] Speaker:` layout.
+5. **Flat text is a canonical CACHE.** `Transcription.text` stores the composed transcript and
+   is never recomposed on read; it feeds list previews, search, `.txt`/CSV export, and paste.
+   Anything that mutates segment speakers after the fact (e.g. the rename-speaker UI in
+   `TranscriptionDetailView`) MUST re-encode `segmentsJSON` **and** rewrite `text` via
+   `TranscriptMerger.composeFlatText` — MD/VTT/SRT read segments and fix themselves; the rest
+   goes stale otherwise.
+6. **The pipeline never downloads models.** `SpeakerDiarizationService.diarize` is cache-only
+   (throws `.modelsNotDownloaded` → assembler degrades to role labels). Downloads happen only
+   in `prepareModels()` from the settings toggle (`Views/Settings/AudioInputSettingsView.swift`,
+   which surfaces failure and flips itself off)
+   and the record-start warm-up in `tryStartMultiSource`. A download inside
+   `runMultiSource` would block the transcript un-cancellably for up to FluidAudio's 1800s
+   request timeout.
 
 ## Persistence + migration
 

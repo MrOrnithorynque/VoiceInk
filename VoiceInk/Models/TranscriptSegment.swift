@@ -10,8 +10,9 @@ import Foundation
 /// start), already shifted by the source's `t0Offset` at merge time — so segments
 /// from different sources sort into one correct conversational order.
 struct TranscriptSegment: Codable, Hashable, Identifiable {
-    /// Ground-truth speaker label derived from the capture source ("Me", "Them", …) —
-    /// never an ML diarization guess.
+    /// Display speaker label. Ground-truth from the capture source ("Me", "Them", …) by
+    /// default; when the opt-in on-device diarizer ran on this segment's source track it is
+    /// a cluster label instead ("Speaker 1", or a user-chosen name) and `clusterId` is set.
     var speaker: String
     /// Cleaned segment text (filter/format/word-replace already applied per-segment).
     var text: String
@@ -19,14 +20,19 @@ struct TranscriptSegment: Codable, Hashable, Identifiable {
     var start: TimeInterval
     /// Seconds from record start.
     var end: TimeInterval
+    /// Stable diarization cluster key (`"<role>#<diarizer speakerId>"`), nil when the label
+    /// is ground-truth-by-source. Optional so pre-diarization rows decode as nil.
+    var clusterId: String?
 
     var id: String { "\(speaker)-\(start)-\(end)" }
 
-    init(speaker: String, text: String, start: TimeInterval, end: TimeInterval) {
+    init(speaker: String, text: String, start: TimeInterval, end: TimeInterval,
+         clusterId: String? = nil) {
         self.speaker = speaker
         self.text = text
         self.start = start
         self.end = end
+        self.clusterId = clusterId
     }
 
     /// `[mm:ss]` timestamp prefix used when composing the flat labeled transcript.
